@@ -1,0 +1,67 @@
+<Configuration>
+  <!--
+    APF · Изолированная среда для рантайм-испытаний (Windows Sandbox).
+
+    ЗАЧЕМ. APF по своей природе меняет глобальное состояние машины: политику Windows Firewall
+    (default-block-outbound), WFP-фильтры, системный HTTP-прокси в HKCU, DNS адаптеров, таблицу
+    политик префиксов IPv6. Любая из этих операций способна оборвать связь на ВСЕЙ машине — что
+    и произошло во время прогона тестов.
+
+    Windows Sandbox даёт одноразовую ВМ со СВОИМ сетевым стеком, своим реестром и своим
+    фаерволом. Всё, что APF там сломает, исчезает при закрытии окна. Хост не затрагивается.
+
+    ПРЕДВАРИТЕЛЬНО (один раз, нужны права администратора + перезагрузка):
+        tools\sandbox\enable_windows_sandbox.ps1
+
+    ЗАПУСК:
+        двойной клик по этому файлу — или:  explorer.exe tools\sandbox\apf_sandbox.wsb
+
+    ВНУТРИ ПЕСОЧНИЦЫ учётка WDAGUtilityAccount уже администратор — поэтому там доступны
+    admin-путь Kill Switch, WFP (FwpmEngineOpen0), установка службы apf-svc и UAC-сценарии.
+
+    ПУТИ НИЖЕ ЖЁСТКО ЗАДАНЫ под текущую машину. При переносе поправьте HostFolder:
+      * исходники APF   — <workspace>
+      * Go toolchain    — C:\Program Files\Go
+      * MinGW (для CGO/-race) — D:\winlibs\mingw64
+  -->
+
+  <VGpu>Disable</VGpu>
+
+  <!--
+    Networking: ВКЛЮЧЕНА намеренно. Без сети нельзя проверить главное — что при активном Kill
+    Switch трафик через туннель ПРОХОДИТ (позитивный тест, отсутствие которого скрыло дефект C-1).
+    Песочница получает отдельный виртуальный адаптер Hyper-V; её фаервол и маршруты изолированы
+    от хоста. Если нужен полностью автономный прогон — поставьте <Networking>Disable</Networking>,
+    но тогда осмысленны только негативные проверки («заблокировано»).
+  -->
+  <Networking>Default</Networking>
+
+  <MappedFolders>
+    <!-- Исходники — ТОЛЬКО ЧТЕНИЕ: песочница не должна портить рабочее дерево. -->
+    <MappedFolder>
+      <HostFolder><workspace></HostFolder>
+      <SandboxFolder>C:\apf-src</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+
+    <!-- Go toolchain — только чтение. Зависимости проекта вендорены, интернет для сборки не нужен. -->
+    <MappedFolder>
+      <HostFolder>C:\Program Files\Go</HostFolder>
+      <SandboxFolder>C:\Go</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+
+    <!-- MinGW: нужен для CGO_ENABLED=1 и детектора гонок (-race). -->
+    <MappedFolder>
+      <HostFolder>D:\winlibs\mingw64</HostFolder>
+      <SandboxFolder>C:\mingw64</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+
+  <LogonCommand>
+    <Command>powershell -NoProfile -ExecutionPolicy Bypass -File C:\apf-src\APF\APF-v1.0.5\apf-dist\source\tools\sandbox\sandbox_bootstrap.ps1</Command>
+  </LogonCommand>
+
+  <MemoryInMB>6144</MemoryInMB>
+</Configuration>

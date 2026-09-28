@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Цвет иконки+подписи вкладки нижней навигации: активная — акцент, прочие — приглушённый.
+     Реагирует на state_selected родительской вкладки (duplicateParentState). -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_selected="true" android:color="#4f8ef7" />
+    <item android:color="#8b949e" />
+</selector>

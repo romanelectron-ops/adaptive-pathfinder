@@ -1,0 +1,7 @@
+Скопируйте целиком, пробелы и невидимые символы вставлены специально.
+1) невидимые символы внутри схемы и тела:
+vl​ess://22222222-3333-4444-5555-666666666666@node‌-f.invalid:443?security=tls&sni=example.invalid#ZW-F
+2) разорванная схема (пробел между слэшами):
+trojan:/ /TROJANPASS0003@node-g.invalid:8443#BROKEN-G
+3) с BOM внутри:
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpTU1BBU1MwMDAy﻿@node-h.invalid:8388#ZW-H

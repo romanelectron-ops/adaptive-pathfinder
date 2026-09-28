@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Пути, которые FileProvider имеет право отдавать наружу.
+    Только каталог логов и конфигураций внутри files/ — чтобы можно было выгрузить
+    отчёт об испытании, не открывая доступ ко всему каталогу данных.
+-->
+<paths>
+    <files-path name="logs" path="logs/" />
+    <files-path name="configs" path="configs/" />
+    <cache-path name="reports" path="reports/" />
+</paths>

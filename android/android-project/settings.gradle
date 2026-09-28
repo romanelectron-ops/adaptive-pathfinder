@@ -1,0 +1,23 @@
+// Без этого файла Gradle не видит модуль :app и сборка невозможна в принципе.
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    // PREFER_SETTINGS: репозитории объявляются только здесь, модульные игнорируются.
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        google()
+        mavenCentral()
+        // Каталог, куда gomobile кладёт apf.aar. Подключается как flatDir,
+        // потому что это локальный артефакт, а не публикация в репозиторий.
+        flatDir { dirs "$rootDir/app/libs" }
+    }
+}
+
+rootProject.name = "APF"
+include ':app'

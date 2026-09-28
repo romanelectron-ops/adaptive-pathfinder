@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    C-17 (ТЗ v1.4, UI_CONTRACT §6): ВЕСЬ текст, который видит пользователь, — на русском и
+    берётся отсюда, а не из строкового литерала в коде. Причина — живой прогон K8-LIVE C4:
+    при добавлении правила `http://` пользователю показывался toast «Bypass: failed to add» —
+    английский технический текст в полностью русском интерфейсе. Английский приходил из моста
+    (bridge.go возвращал готовую строку), а префикс «Bypass:» был зашит в Kotlin.
+
+    Правило, которое здесь закреплено: мост возвращает КОД (или короткую техническую строку),
+    Kotlin переводит его в человеческую фразу по формуле «что случилось → что делать»
+    (UI_CONTRACT §7.1) — коды на экран не выводятся.
+
+    Технические имена протоколов и форматов (TLS, SNI, DNS, CDN, TCP, VPN, SOCKS5, Reality,
+    ShadowTLS, JSON) — не переводятся: это общепринятые аббревиатуры, а не английские слова.
+-->
+<resources>
+    <string name="app_name">APF</string>
+    <!-- Полное название для подписи под заголовком. Номер версии сюда НЕ вписывать:
+         он подставляется из ядра (дефект D-A26). -->
+    <string name="product_name">Adaptive PathFinder</string>
+    <string name="connect">Подключить</string>
+    <string name="disconnect">Отключить</string>
+    <string name="connecting">Подключение...</string>
+
+    <!-- ─── Подключение и режим ─────────────────────────────────────────────── -->
+    <string name="t_notifications_denied">Уведомления запрещены: APF не сможет показать состояние подключения, предупреждение об утечке и кнопку «Отключить»</string>
+    <string name="t_vpn_starting">APF: поднимаю VPN</string>
+    <string name="t_vpn_starting_to">APF: поднимаю VPN к %1$s</string>
+    <string name="t_vpn_consent_denied">Система не подтвердила согласие на туннель — VPN не поднят</string>
+    <string name="t_proxy_scanning">APF: подбираю сервер</string>
+    <string name="t_proxy_connecting_to">APF: подключаюсь к %1$s</string>
+    <string name="t_switching_to">Переключаюсь на %1$s…</string>
+    <string name="e_connect">Не удалось подключиться: %1$s</string>
+
+    <!-- U-16 (UI_CONTRACT §1.1): единый текст отказа действия «⇄ Сменить сервер» на всех
+         трёх интерфейсах. -->
+    <string name="t_switch_nothing">Нечего переключать — сначала подключитесь</string>
+    <string name="t_switch_in_progress">Переключаю на другой сервер…</string>
+
+    <!-- ─── Каталог и провайдеры ────────────────────────────────────────────── -->
+    <string name="t_catalog_refreshing">Обновляю каталог…</string>
+    <string name="e_catalog_refresh">Не удалось обновить каталог: %1$s</string>
+    <string name="e_catalog_provider_toggle">Не удалось изменить источник: %1$s</string>
+    <string name="t_provider_removed">Провайдер удалён</string>
+    <string name="e_provider_remove">Не удалось удалить провайдера: %1$s</string>
+    <string name="t_provider_need_name">Укажите название</string>
+    <string name="t_provider_added">Провайдер добавлен</string>
+
+    <!-- ─── Мои серверы ─────────────────────────────────────────────────────── -->
+    <string name="e_sweep">Не удалось запустить обход: %1$s</string>
+    <string name="e_node_check">Не удалось запустить проверку узлов: %1$s</string>
+    <string name="t_restored_removed">Восстановлено удалённых: %1$d — вернутся при следующем обновлении источников</string>
+    <string name="e_pin">Не удалось изменить закрепление: %1$s</string>
+    <string name="t_pinned">Закреплено: %1$s</string>
+    <string name="t_unpinned">Откреплено: %1$s</string>
+    <string name="e_favorite">Не удалось изменить избранное: %1$s</string>
+    <string name="e_ban">Не удалось изменить бан: %1$s</string>
+
+    <!-- ─── W3 (ТЗ v1.5 §2/§5): классы избранного + интервал пересмотра каталога ──────── -->
+    <string name="cd_system_favorite_promote">Добавлен автоматически по трафик-пробе; снимется, если сервер перестанет давать трафик. Нажмите, чтобы сделать постоянным избранным</string>
+    <string name="cd_system_favorite_remove">Убрать из авто-избранного</string>
+    <string name="catalog_review_interval_label">Интервал пересмотра каталога</string>
+    <string name="catalog_review_interval_hint">Как часто пересматривается системный список избранного: после этого срока проваленная проба трафика вправе снять сервер при следующей СБОРКЕ. Сборка каталога запускается только вручную — автоматического скана нет, это порог давности, а не таймер.</string>
+    <string name="e_review_interval">Не удалось изменить интервал пересмотра каталога: %1$s</string>
+    <string name="e_remove_node">Не удалось удалить сервер: %1$s</string>
+    <string name="e_edit_node">Не удалось сохранить правку: %1$s</string>
+    <string name="t_node_added">Сервер добавлен</string>
+    <string name="e_add_node">Не удалось добавить сервер: %1$s</string>
+    <string name="t_need_link">Введите ссылку: vless://, vmess://, ss://, trojan://</string>
+    <string name="t_bad_link">Неверный формат ссылки</string>
+
+    <!-- ─── Блокировка рекламы ──────────────────────────────────────────────── -->
+    <string name="t_adblock_profile_changed">Профиль изменён, списки загружаются…</string>
+    <string name="e_adblock">Не удалось изменить профиль блокировки: %1$s</string>
+    <string name="t_allowlist_added">Добавлено в белый список: %1$s</string>
+    <string name="t_allowlist_removed">Убрано: %1$s</string>
+
+    <!-- ─── Приватность / защита ────────────────────────────────────────────── -->
+    <string name="e_webrtc">Не удалось изменить блокировку WebRTC: %1$s</string>
+    <string name="e_ipv6">Не удалось изменить блокировку IPv6: %1$s</string>
+    <string name="e_killswitch_title">Kill Switch</string>
+
+    <!-- ─── Анти-DPI ────────────────────────────────────────────────────────── -->
+    <string name="t_shadowtls_saved">ShadowTLS сохранён</string>
+    <string name="e_shadowtls">Не удалось сохранить ShadowTLS: %1$s</string>
+    <string name="t_cdn_saved">CDN Fronting сохранён</string>
+
+    <!-- ─── Анти-блокировка, правила обхода, приложения вне VPN ─────────────── -->
+    <string name="t_saved">Сохранено</string>
+    <string name="e_disallowed_apps">Не удалось сохранить список приложений: %1$s</string>
+    <string name="t_bypass_need_domain">Введите домен</string>
+    <string name="t_bypass_added">Добавлено: %1$s</string>
+    <string name="t_bypass_removed">Удалено: %1$s</string>
+    <string name="e_bypass_add">Не удалось добавить правило: %1$s</string>
+    <string name="e_bypass_remove">Не удалось удалить правило: %1$s</string>
+    <string name="e_bypass_update">Не удалось сохранить правило: %1$s</string>
+    <string name="e_bypass_toggle">Не удалось переключить правило: %1$s</string>
+
+    <!--
+        C-17 + UI_CONTRACT §7.3: причины отказа моста в человеческом виде.
+        Мост (bridge.go) пока возвращает короткие английские строки; когда лот L1b-ENG2
+        переведёт его на коды (invalid_domain / duplicate / store_failed), сопоставление
+        в bridgeErrorText() уже готово принять и коды, и прежние строки — новых правок
+        Kotlin для этого не потребуется.
+    -->
+    <string name="err_invalid_domain">похоже на адрес сайта, а не домен — уберите http:// и путь после имени</string>
+    <string name="err_duplicate">такое правило уже есть в списке</string>
+    <string name="err_store_failed">не удалось сохранить список на диск — проверьте свободное место</string>
+    <string name="err_not_initialized">ядро ещё не запущено — подключитесь один раз, затем повторите</string>
+    <string name="err_builtin_readonly">встроенное правило изменить или удалить нельзя</string>
+    <string name="err_rule_not_found">правило не найдено — список мог обновиться, откройте экран заново</string>
+    <string name="err_unknown">%1$s</string>
+
+    <!-- ─── Шифрование и аварийная очистка ──────────────────────────────────── -->
+    <string name="t_need_password">Введите пароль</string>
+    <string name="t_crypto_on">Шифрование включено</string>
+    <string name="t_crypto_off">Шифрование выключено</string>
+    <string name="t_wipe_need_confirm">Наберите WIPE заглавными буквами для подтверждения</string>
+    <string name="t_wipe_done">Данные удалены: %1$d файлов</string>
+    <string name="e_wipe">Не удалось стереть данные: %1$s</string>
+    <string name="e_parse_result">Не удалось разобрать ответ: %1$s</string>
+
+    <!-- ─── Лог ─────────────────────────────────────────────────────────────── -->
+    <string name="t_log_missing">Файл лога пока не создан</string>
+    <string name="e_log_export">Не удалось подготовить файл лога: %1$s</string>
+
+    <!-- ─── Роль «Выход» / цепочка Вход-Выход ───────────────────────────────── -->
+    <string name="t_need_partner_link">Вставьте ссылку, которую вам прислал партнёр (экран «Роль Выход» на его устройстве)</string>
+    <string name="t_partner_connecting">Подключаюсь к партнёру…</string>
+    <string name="t_partner_connected">✓ Подключено к партнёру Вход-Выход</string>
+    <string name="e_partner_connect">Не удалось подключиться к партнёру: %1$s</string>
+    <string name="t_identity_failed">Не удалось сгенерировать identity</string>
+    <string name="t_identity_ok">Identity сгенерирована</string>
+    <string name="t_identity_first">Сначала сгенерируйте identity</string>
+    <string name="t_need_port">Введите порт 1..65535</string>
+    <string name="t_need_host">Введите host</string>
+    <string name="t_relay_need_fingerprint">Указан адрес relay, но не указан его отпечаток TLS-сертификата — без него relay откажет</string>
+    <string name="t_no_vpn_consent">Нет согласия на VPN-разрешение — подключитесь один раз в режиме VPN, затем повторите</string>
+    <string name="t_server_role_starting">Запускаю роль «Выход» на порту %1$d</string>
+    <string name="t_server_role_stopping">Останавливаю роль «Выход»</string>
+    <string name="e_build_link">Не удалось собрать ссылку: %1$s</string>
+
+    <!-- ─── C-19: системный Kill Switch, чек-лист вместо вечного утверждения ── -->
+    <string name="ks_hint_green">✓ Системная защита включена: «Всегда включённый VPN» + «Блокировать соединения без VPN». Нажмите, чтобы прочитать подробнее.</string>
+    <string name="ks_hint_orange">⚠ Одного этого тумблера мало: защиту в Android даёт системная настройка «Всегда включённый VPN» + «Блокировать соединения без VPN». Нажмите, чтобы прочитать подробнее.</string>
+    <string name="ks_hint_checklist">Проверьте: «Всегда включённый VPN» и «Блокировать соединения без VPN» включены для APF в системных настройках</string>
+    <string name="ks_hint_acked">Вы подтвердили, что системная защита включена. APF не может проверить это сам — прочитать системную настройку приложению не разрешено.</string>
+    <string name="ks_status_warn">⚠ Защита неполная: системный Kill Switch выключен. Нажмите, чтобы включить.</string>
+    <string name="ks_ack_button">Я включил, скрыть</string>
+    <string name="ks_open_settings">Открыть настройки VPN в Android</string>
+
+    <!-- ─── C-13: третье состояние тумблеров ────────────────────────────────── -->
+    <string name="protection_unknown_hint">Ядро не запущено — переключатели показаны по сохранённым настройкам; ядро подтвердит их при первом подключении</string>
+
+    <!-- ─── C-18: три числа о пуле ──────────────────────────────────────────── -->
+    <string name="pool_counts">В пуле %1$d · отвечает по TCP %2$d · подтверждено трафиком %3$d</string>
+    <string name="pool_counts_stale">В пуле %1$d · отвечает по TCP %2$d · подтверждено трафиком %3$d (из них устарело %4$d)</string>
+
+    <!-- ─── C-20: подпись задержки ──────────────────────────────────────────── -->
+    <string name="latency_tun">%1$d мс через туннель</string>
+    <string name="latency_socks">%1$d мс через прокси-канал узла</string>
+    <string name="latency_exit">%1$d мс до выхода</string>
+    <string name="latency_tcp">%1$d мс до сервера (TCP)</string>
+
+    <!-- ─── C-21: метка каталога против фактического выхода ─────────────────── -->
+    <string name="exit_country_match">%1$s (каталог и фактический выход совпадают)</string>
+    <string name="exit_country_mismatch">%1$s (каталог) · %2$s (фактический выход) — расхождение</string>
+    <string name="exit_country_only">Фактический выход: %1$s</string>
+
+    <!-- ─── U-17: ошибка сохранения узлов ───────────────────────────────────── -->
+    <string name="persist_warn">⚠ Узлы не сохранены: %1$s</string>
+
+    <!-- ─── U-1/U-3/U-4/U-18: подписи элементов ─────────────────────────────── -->
+    <string name="btn_disallowed_apps">Приложения вне VPN</string>
+    <string name="btn_add_and_connect">Добавить и подключиться</string>
+    <string name="btn_edit_node">✏ Правка</string>
+    <string name="btn_restore_removed">♻ Восстановить удалённые</string>
+    <string name="btn_export_log">Выгрузить лог</string>
+    <string name="btn_close">Закрыть</string>
+    <string name="btn_back_to_catalog">Назад в каталог</string>
+    <string name="my_servers_search_hint">Поиск по имени, адресу или стране</string>
+    <string name="my_servers_find">Найти</string>
+    <string name="my_servers_more">Показать ещё</string>
+    <string name="my_servers_shown">Показано %1$d из %2$d</string>
+    <string name="my_servers_nothing_found">Ничего не найдено по этому запросу и фильтру</string>
+</resources>

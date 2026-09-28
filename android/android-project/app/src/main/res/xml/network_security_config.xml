@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Политика сетевой безопасности APF.
+
+    Открытый HTTP разрешён ТОЛЬКО к localhost: туда ходит сам APF, проверяя
+    собственный SOCKS/HTTP-слушатель. Ко всем прочим адресам открытый текст запрещён —
+    иначе проверка связности могла бы «успешно» пройти по незашифрованному каналу
+    и замаскировать неработающий туннель.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <!-- Проверка связности Microsoft отдаёт ответ только по HTTP. -->
+        <domain includeSubdomains="false">www.msftconnecttest.com</domain>
+    </domain-config>
+</network-security-config>

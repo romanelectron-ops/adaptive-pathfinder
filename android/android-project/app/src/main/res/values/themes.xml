@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.APF" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#4f8ef7</item>
+        <item name="colorPrimaryVariant">#2563d4</item>
+        <item name="colorOnPrimary">#ffffff</item>
+        <item name="android:windowBackground">#0d1117</item>
+        <item name="android:statusBarColor">#161b22</item>
+        <item name="android:navigationBarColor">#0d1117</item>
+        <!-- V1.8 грумминг подменю: единый тёмный вид диалогов и аккуратные кнопки внутри них.
+             alertDialogTheme подхватывают существующие AlertDialog.Builder(this) без правок;
+             materialButtonStyle — дефолт для сырых Button(this) в диалогах (кнопки главного
+             экрана имеют явные стили/инлайновый фон и не затрагиваются). -->
+        <item name="alertDialogTheme">@style/ApfDialog</item>
+        <item name="android:buttonStyle">@style/DialogButton</item>
+        <item name="android:editTextStyle">@style/DialogInput</item>
+    </style>
+</resources>

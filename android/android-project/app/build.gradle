@@ -1,0 +1,88 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.apf.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.apf.app"
+        minSdk 26          // Android 8.0+ — адаптивные иконки и нормальные foreground-службы
+        targetSdk 34
+        // Версия обязана совпадать с internal/version.Version — иначе отчёт об испытании
+        // невозможно соотнести со сборкой (дефект D-A8).
+        versionCode 119
+        versionName "1.1.9"
+
+        ndk {
+            // Целевое устройство испытаний — arm64-v8a. armeabi-v7a добавлять только вместе
+            // с соответствующим libsingbox.so, иначе на 32-битном телефоне приложение
+            // установится, но ядро не запустится.
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug // заменить на release-keystore перед публикацией
+        }
+        debug {
+            debuggable true
+            applicationIdSuffix ''   // тот же applicationId: стенд ставит debug поверх release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    sourceSets {
+        main {
+            // Сюда кладётся sing-box под именем libsingbox.so (см. jniLibs ниже).
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // КЛЮЧЕВОЕ. sing-box — не библиотека, а исполняемый файл, который запускается
+            // как отдельный процесс. Чтобы его можно было запустить, он должен лежать
+            // РАСПАКОВАННЫМ в nativeLibraryDir. При useLegacyPackaging=false (умолчание
+            // AGP 8) файл остаётся сжатым внутри APK, на диске его нет, и exec падает с
+            // ENOENT. Это же единственный каталог, откуда Android 10+ вообще разрешает
+            // выполнение — из каталога данных запуск запрещён (W^X).
+            useLegacyPackaging = true
+            keepDebugSymbols += ['**/libgojni.so', '**/libsingbox.so']
+        }
+    }
+
+    lint {
+        // Сборка стенда не должна падать из-за замечаний стиля, но настоящие ошибки
+        // (например обращение к API выше minSdk) обязаны оставаться видимыми.
+        abortOnError false
+        warningsAsErrors false
+    }
+}
+
+dependencies {
+    // Мост к Go-ядру APF, собирается командой gomobile bind (см. tools/android/build_aar.ps1).
+    // Файл кладётся в app/libs/apf.aar; репозиторий flatDir объявлен в settings.gradle.
+    implementation(name: 'apf', ext: 'aar')
+
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+    implementation 'androidx.activity:activity-ktx:1.8.2'
+
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+}

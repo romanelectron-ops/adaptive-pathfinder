@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Фон адаптивной иконки. Отдельным ресурсом, потому что на него ссылается
+         mipmap-anydpi-v26/ic_launcher.xml. -->
+    <color name="ic_launcher_background">#0E2A47</color>
+</resources>

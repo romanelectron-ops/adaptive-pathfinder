@@ -1,0 +1,54 @@
+# DEF-04 — CI-матрица GOOS=windows,linux.
+# Ловит класс «тест, неявно завязанный на ОС» (DEF-01/F-31): тест должен быть либо помечен
+# build-тегом своей ОС, либо использовать инъекционный шов (мок), а не реальные бинарники.
+# Разместить этот файл в КОРНЕ git-репозитория: .github/workflows/apf-ci.yml
+# (рабочая директория модуля — APF-v1.0.5/apf-dist/source; при необходимости поправьте working-directory).
+name: APF CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-matrix:
+    name: build+vet+test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: APF-v1.0.5/apf-dist/source
+    env:
+      GOFLAGS: -mod=vendor
+      GOPROXY: off
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./internal/... ./cmd/...
+      - name: Unit tests
+        run: go test -count=1 ./internal/...
+
+  race-linux:
+    name: race detector (linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: APF-v1.0.5/apf-dist/source
+    env:
+      GOFLAGS: -mod=vendor
+      GOPROXY: off
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Race tests
+        run: go test -count=1 -race ./internal/...

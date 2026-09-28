@@ -1,0 +1,19 @@
+{
+  "_comment": "СГЕНЕРИРОВАНО `go generate ./internal/killswitch` — вручную не править. Единственный источник истины: windowsRuleSuffixes в internal/killswitch/killswitch.go.",
+  "rule_prefix": "APF-KillSwitch",
+  "tun_subnet": "172.19.0.0/30",
+  "rules": [
+    "APF-KillSwitch-allow-loopback",
+    "APF-KillSwitch-allow-lan",
+    "APF-KillSwitch-allow-vpn",
+    "APF-KillSwitch-allow-vpn6",
+    "APF-KillSwitch-allow-tun",
+    "APF-KillSwitch-allow-probe",
+    "APF-KillSwitch-allow-probe6",
+    "APF-KillSwitch-block-tcp",
+    "APF-KillSwitch-block-udp",
+    "APF-KillSwitch-block-out",
+    "APF-KillSwitch-allow-local",
+    "APF-KillSwitch-allow-dns"
+  ]
+}

@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Стили редизайна V1.8 (нижняя навигация + карточки/плитки).
+
+    ВАЖНО (живой прогон 2026-09-21): тема приложения — Theme.MaterialComponents, поэтому тег
+    <Button> инфлейтится как MaterialButton. MaterialButton ИГНОРИРУЕТ android:background,
+    заданный через style (рисует свой заливной фон цветом colorPrimary), — из-за этого первая
+    версия стилей давала ярко-синие плитки и невидимый синий текст на синем. Поэтому стили
+    ниже оформлены ИМЕННО под MaterialButton: фон задаётся backgroundTint, скругление —
+    cornerRadius, рамка — strokeColor/strokeWidth, шеврон — app:icon (iconGravity=end).
+    Тип виджета остаётся Button (MaterialButton — подкласс), поэтому findViewById<Button> и
+    слушатели в MainActivity.kt валидны.
+-->
+<resources>
+
+    <!-- Плитка-вход в раздел: тёмный фон, рамка, слева эмодзи-глиф в тексте, справа шеврон,
+         текст переносится до 3 строк и НЕ обрезается (жалоба владельца 2026-09-21). -->
+    <style name="Entry" parent="Widget.MaterialComponents.Button">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">56dp</item>
+        <item name="backgroundTint">#161b22</item>
+        <item name="cornerRadius">14dp</item>
+        <item name="strokeColor">#30363d</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="rippleColor">#3341629e</item>
+        <item name="android:textColor">#e6edf3</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:gravity">start|center_vertical</item>
+        <item name="android:maxLines">3</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <!-- Ведущая монохромная vector-иконка (V1.9): app:icon задаётся у каждой плитки,
+             слева от текста. Шеврон убран — иконка важнее для сканирования (как в AdGuard). -->
+        <item name="iconGravity">textStart</item>
+        <item name="iconTint">#8b949e</item>
+        <item name="iconPadding">14dp</item>
+        <item name="iconSize">22dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:layout_marginBottom">8dp</item>
+    </style>
+
+    <!-- Для входов в горизонтальной строке с отдельной иконкой «ⓘ» (btnDpi, btnServerRole):
+         ширина 0dp + weight задаётся на месте; ведущую иконку каждый ставит сам. -->
+    <style name="Entry.NoChevron">
+        <item name="android:layout_marginBottom">0dp</item>
+    </style>
+
+    <!-- Вторичная кнопка-действие (Открыть настройки VPN, Я включил, Добавить …):
+         приглушённый фон, акцентный текст (теперь виден — фон тёмный). -->
+    <style name="Secondary" parent="Widget.MaterialComponents.Button">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="backgroundTint">#21262d</item>
+        <item name="cornerRadius">10dp</item>
+        <item name="strokeColor">#30363d</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="rippleColor">#3341629e</item>
+        <item name="android:textColor">#4f8ef7</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:maxLines">2</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+    </style>
+
+    <!-- Заголовок раздела внутри вкладки. -->
+    <style name="SectionTitle">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">#8b949e</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:letterSpacing">0.12</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:layout_marginTop">18dp</item>
+        <item name="android:layout_marginBottom">10dp</item>
+    </style>
+
+    <!-- ─── Диалоги-«подменю»: единый тёмный вид (грумминг 2026-09-21) ─── -->
+
+    <!-- Тема окна диалога: тёмный скруглённый фон, акцентные кнопки-бар, светлый текст.
+         Подключается через alertDialogTheme в Theme.APF — существующие AlertDialog.Builder(this)
+         подхватывают её без правок в каждом месте вызова. -->
+    <style name="ApfDialog" parent="Theme.AppCompat.DayNight.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="colorAccent">#4f8ef7</item>
+        <item name="android:textColorPrimary">#e6edf3</item>
+        <item name="android:textColorSecondary">#8b949e</item>
+        <item name="android:textColorAlertDialogListItem">#e6edf3</item>
+    </style>
+
+    <!-- Кнопки ВНУТРИ диалогов: это ПРОГРАММНЫЕ android.widget.Button (Button(this) в коде),
+         поэтому грумятся через android:buttonStyle темы активности, а НЕ materialButtonStyle
+         (авто-подмена на MaterialButton работает лишь при инфляции XML). Плоский Button
+         понимает только android:background — поэтому тёмная плитка задаётся drawable
+         bg_secondary, а не MaterialButton-атрибутами. XML-кнопки главного экрана —
+         MaterialButton со своими явными стилями/инлайновым фоном — этим НЕ затрагиваются. -->
+    <style name="DialogButton" parent="Widget.AppCompat.Button">
+        <item name="android:background">@drawable/bg_secondary</item>
+        <item name="android:textColor">#4f8ef7</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:minHeight">44dp</item>
+        <item name="android:paddingLeft">16dp</item>
+        <item name="android:paddingRight">16dp</item>
+    </style>
+
+    <!-- Поля ввода ВНУТРИ диалогов (программные EditText(this) = android.widget.EditText):
+         грумятся через android:editTextStyle темы активности. Плоская рамка вместо
+         подчёркивания. XML-поле etNodeLink на главном экране имеет явный android:background
+         и не затрагивается. -->
+    <style name="DialogInput" parent="Widget.AppCompat.EditText">
+        <item name="android:background">@drawable/edit_text_bg</item>
+        <item name="android:textColor">#e6edf3</item>
+        <item name="android:textColorHint">#484f58</item>
+        <item name="android:padding">12dp</item>
+        <item name="android:minHeight">44dp</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+</resources>

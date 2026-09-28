@@ -1,0 +1,1029 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    V1.8 (редизайн UI, запрос владельца 2026-09-21): нижняя навигация из 4 вкладок
+    (Главная · Защита · Узлы · Ещё) + карточки/плитки, как в AdGuard. Раньше все 9 разделов
+    шли одной сплошной прокруткой одинаковых full-width кнопок: длинные подписи обрезались,
+    разделы терялись.
+
+    ИНВАРИАНТ «ноль потерь»: ни один из 45 id, на которые ссылается MainActivity.kt, не
+    переименован и не удалён; тип каждого виджета сохранён (Button остаётся Button, Switch —
+    Switch, Spinner — Spinner, EditText/ProgressBar/TextView — как были), поэтому findViewById,
+    слушатели и вся логика renderState продолжают работать без правок. Изменена только
+    РАСКЛАДКА (распределение по 4 страницам) и ОФОРМЛЕНИЕ (карточки bg_card, плитки Entry с
+    переносом текста, шапка-герой). Диалоги (Каталог, Мои серверы и т.д.) не тронуты — сюда
+    вынесены только их кнопки-входы. Спиннер «Глубина проверки / Все рабочие» остаётся внутри
+    диалога «Мои серверы».
+
+    Info-иконки «ⓘ» сохраняют тач-цель 48dp (minWidth/minHeight), контраст #4f8ef7 и размер 20sp.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0d1117">
+
+    <!-- ═══════════════ ХОСТ СТРАНИЦ (переключается нижней панелью) ═══════════════ -->
+    <FrameLayout
+        android:id="@+id/navHost"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <!-- ─────────────────────── 🏠 ГЛАВНАЯ ─────────────────────── -->
+        <ScrollView
+            android:id="@+id/pageHome"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="20dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <!-- Логотип + версия -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="⚡ APF"
+                    android:textSize="28sp"
+                    android:textColor="#4f8ef7"
+                    android:textStyle="bold"
+                    android:gravity="center"
+                    android:layout_marginTop="8dp" />
+
+                <!-- Версия подставляется из ядра в MainActivity (дефект D-A26). -->
+                <TextView
+                    android:id="@+id/tvVersion"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Adaptive PathFinder"
+                    android:textSize="12sp"
+                    android:textColor="#8b949e"
+                    android:gravity="center"
+                    android:layout_marginBottom="16dp" />
+
+                <!-- Герой-карточка: состояние + подключение -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center_horizontal"
+                    android:background="@drawable/bg_hero"
+                    android:padding="18dp"
+                    android:layout_marginBottom="12dp">
+
+                    <TextView
+                        android:id="@+id/tvStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="○ Отключено"
+                        android:textSize="22sp"
+                        android:textColor="#8b949e"
+                        android:textStyle="bold"
+                        android:gravity="center"
+                        android:layout_marginBottom="6dp" />
+
+                    <TextView
+                        android:id="@+id/tvNodeName"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text=""
+                        android:textSize="14sp"
+                        android:textColor="#e6edf3"
+                        android:gravity="center"
+                        android:layout_marginBottom="4dp" />
+
+                    <!-- C-21: фактическая страна выхода (видна только когда известна). -->
+                    <TextView
+                        android:id="@+id/tvExitCountry"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text=""
+                        android:textSize="12sp"
+                        android:textColor="#8b949e"
+                        android:gravity="center"
+                        android:visibility="gone"
+                        android:layout_marginBottom="4dp" />
+
+                    <TextView
+                        android:id="@+id/tvLatency"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text=""
+                        android:textSize="12sp"
+                        android:textColor="#8b949e"
+                        android:gravity="center"
+                        android:layout_marginBottom="10dp" />
+
+                    <ProgressBar
+                        android:id="@+id/progressBar"
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:visibility="gone"
+                        android:layout_marginBottom="12dp" />
+
+                    <Button
+                        android:id="@+id/btnConnect"
+                        android:layout_width="match_parent"
+                        android:layout_height="56dp"
+                        android:text="Подключить"
+                        android:textSize="16sp"
+                        android:textColor="#ffffff"
+                        android:background="@drawable/btn_connect_bg"
+                        android:layout_marginBottom="14dp" />
+
+                    <!-- C-18: три честных числа о пуле (текст ставит MainActivity.poolCountsLine). -->
+                    <TextView
+                        android:id="@+id/tvStats"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Серверов: загрузка..."
+                        android:textSize="12sp"
+                        android:textColor="#8b949e"
+                        android:gravity="center"
+                        android:layout_marginBottom="12dp" />
+
+                    <!-- U-16 (UI_CONTRACT §1.1): «⇄ Сменить сервер». -->
+                    <!-- style=Secondary (MaterialButton с backgroundTint) — НЕ android:background:
+                         MaterialButton не держит кастомный android:background при смене
+                         enabled-состояния (после подключения кнопка становится активной и
+                         откатывалась на синюю заливку colorPrimary с невидимым синим текстом,
+                         живой прогон 2026-09-21). backgroundTint переживает смену состояния. -->
+                    <Button
+                        android:id="@+id/btnForceSwitch"
+                        style="@style/Secondary"
+                        android:layout_width="wrap_content"
+                        android:minWidth="200dp"
+                        android:text="⇄ Сменить сервер" />
+
+                    <!-- V1.8 эргономика: статус-чипы-зеркала состояния защиты (текст/цвет
+                         ставит updateStatusChips() из тумблеров). Тап → вкладка с этим тумблером. -->
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center"
+                        android:layout_marginTop="16dp">
+                        <TextView
+                            android:id="@+id/chipVpn"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="VPN"
+                            android:textSize="11sp"
+                            android:textColor="#8b949e"
+                            android:background="@drawable/bg_chip"
+                            android:paddingLeft="11dp"
+                            android:paddingRight="11dp"
+                            android:paddingTop="5dp"
+                            android:paddingBottom="5dp"
+                            android:layout_marginEnd="6dp"
+                            android:clickable="true"
+                            android:focusable="true" />
+                        <TextView
+                            android:id="@+id/chipKs"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Kill Switch"
+                            android:textSize="11sp"
+                            android:textColor="#8b949e"
+                            android:background="@drawable/bg_chip"
+                            android:paddingLeft="11dp"
+                            android:paddingRight="11dp"
+                            android:paddingTop="5dp"
+                            android:paddingBottom="5dp"
+                            android:layout_marginEnd="6dp"
+                            android:clickable="true"
+                            android:focusable="true" />
+                        <TextView
+                            android:id="@+id/chipIpv6"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="IPv6"
+                            android:textSize="11sp"
+                            android:textColor="#8b949e"
+                            android:background="@drawable/bg_chip"
+                            android:paddingLeft="11dp"
+                            android:paddingRight="11dp"
+                            android:paddingTop="5dp"
+                            android:paddingBottom="5dp"
+                            android:clickable="true"
+                            android:focusable="true" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- Транзиентные предупреждения (видимость управляется renderState/update*). -->
+                <TextView
+                    android:id="@+id/tvProtectionUnknownHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/protection_unknown_hint"
+                    android:textSize="12sp"
+                    android:textColor="#8b949e"
+                    android:lineSpacingExtra="2dp"
+                    android:visibility="gone"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:id="@+id/tvKillSwitchStatusWarn"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/ks_status_warn"
+                    android:textSize="12sp"
+                    android:textColor="#f5a623"
+                    android:gravity="center_horizontal"
+                    android:lineSpacingExtra="2dp"
+                    android:visibility="gone"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:id="@+id/tvSwitchNotice"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textSize="12sp"
+                    android:textColor="#8b949e"
+                    android:gravity="center_horizontal"
+                    android:lineSpacingExtra="2dp"
+                    android:visibility="gone"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:id="@+id/tvPersistWarn"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textSize="12sp"
+                    android:textColor="#f5a623"
+                    android:gravity="center_horizontal"
+                    android:lineSpacingExtra="2dp"
+                    android:visibility="gone"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:id="@+id/tvDisallowedAppsIndicator"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textSize="12sp"
+                    android:textColor="#f5a623"
+                    android:gravity="center_horizontal"
+                    android:visibility="gone"
+                    android:layout_marginBottom="8dp" />
+
+                <!-- Режим подключения -->
+                <TextView style="@style/SectionTitle" android:text="Подключение" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="@drawable/bg_card"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="8dp"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="4dp">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Режим VPN (создаёт TUN)"
+                        android:drawableStart="@drawable/ic_e_vpn"
+                        android:drawableTint="#8b949e"
+                        android:drawablePadding="12dp"
+                        android:gravity="center_vertical"
+                        android:textColor="#e6edf3"
+                        android:textSize="14sp" />
+                    <TextView
+                        android:id="@+id/ivInfoVpnMode"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="48dp"
+                        android:minHeight="48dp"
+                        android:gravity="center"
+                        android:text="ⓘ"
+                        android:textColor="#4f8ef7"
+                        android:textSize="20sp"
+                        android:padding="8dp" />
+                    <Switch
+                        android:id="@+id/swVpnMode"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="false" />
+                </LinearLayout>
+
+                <View android:layout_width="match_parent" android:layout_height="24dp" />
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- ─────────────────────── 🛡 ЗАЩИТА ─────────────────────── -->
+        <ScrollView
+            android:id="@+id/pageProtect"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="20dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView style="@style/SectionTitle" android:text="Защита и утечки"
+                    android:layout_marginTop="4dp" />
+
+                <!-- Карточка Kill Switch: тумблер + подсказка (3 состояния) + 2 действия. -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/bg_card"
+                    android:padding="4dp"
+                    android:layout_marginBottom="8dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="4dp">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Kill Switch"
+                            android:drawableStart="@drawable/ic_e_killswitch"
+                            android:drawableTint="#8b949e"
+                            android:drawablePadding="12dp"
+                            android:gravity="center_vertical"
+                            android:textColor="#e6edf3"
+                            android:textSize="14sp" />
+                        <TextView
+                            android:id="@+id/ivInfoKillSwitch"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="48dp"
+                            android:minHeight="48dp"
+                            android:gravity="center"
+                            android:text="ⓘ"
+                            android:textColor="#4f8ef7"
+                            android:textSize="20sp"
+                            android:padding="8dp" />
+                        <Switch
+                            android:id="@+id/swKillSwitch"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="true" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tvKillSwitchHint"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/ks_hint_orange"
+                        android:textSize="12sp"
+                        android:textColor="#f5a623"
+                        android:lineSpacingExtra="2dp"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:layout_marginBottom="8dp" />
+
+                    <Button
+                        android:id="@+id/btnOpenVpnSettings"
+                        style="@style/Secondary"
+                        android:text="@string/ks_open_settings"
+                        android:layout_marginStart="10dp"
+                        android:layout_marginEnd="10dp"
+                        android:layout_marginBottom="8dp" />
+
+                    <Button
+                        android:id="@+id/btnKillSwitchAck"
+                        style="@style/Secondary"
+                        android:text="@string/ks_ack_button"
+                        android:textColor="#8b949e"
+                        android:visibility="gone"
+                        android:layout_marginStart="10dp"
+                        android:layout_marginEnd="10dp"
+                        android:layout_marginBottom="8dp" />
+                </LinearLayout>
+
+                <!-- Карточка IPv6 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="@drawable/bg_card"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="8dp"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="4dp"
+                    android:layout_marginBottom="16dp">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="IPv6 Block"
+                        android:drawableStart="@drawable/ic_e_ipv6"
+                        android:drawableTint="#8b949e"
+                        android:drawablePadding="12dp"
+                        android:gravity="center_vertical"
+                        android:textColor="#e6edf3"
+                        android:textSize="14sp" />
+                    <TextView
+                        android:id="@+id/ivInfoIpv6"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="48dp"
+                        android:minHeight="48dp"
+                        android:gravity="center"
+                        android:text="ⓘ"
+                        android:textColor="#4f8ef7"
+                        android:textSize="20sp"
+                        android:padding="8dp" />
+                    <Switch
+                        android:id="@+id/swIpv6Block"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true" />
+                </LinearLayout>
+
+                <!-- Входы защиты -->
+                <Button
+                    android:id="@+id/btnDisallowedApps"
+                    style="@style/Entry"
+                    android:text="@string/btn_disallowed_apps"
+                    app:icon="@drawable/ic_e_apps" />
+
+                <Button
+                    android:id="@+id/btnPrivacy"
+                    style="@style/Entry"
+                    android:text="Приватность (WebRTC, DNS-leak)"
+                    app:icon="@drawable/ic_e_privacy" />
+
+                <TextView style="@style/SectionTitle" android:text="Обход DPI" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="8dp">
+                    <Button
+                        android:id="@+id/btnDpi"
+                        style="@style/Entry.NoChevron"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:text="Анти-DPI / Скрытность"
+                        app:icon="@drawable/ic_nav_shield" />
+                    <TextView
+                        android:id="@+id/ivInfoDpi"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="48dp"
+                        android:minHeight="48dp"
+                        android:gravity="center"
+                        android:text="ⓘ"
+                        android:textColor="#4f8ef7"
+                        android:textSize="20sp"
+                        android:padding="8dp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnAntiBlock"
+                    style="@style/Entry"
+                    android:text="Анти-блокировка"
+                    app:icon="@drawable/ic_e_antiblock" />
+
+                <TextView style="@style/SectionTitle" android:text="Реклама" />
+
+                <Button
+                    android:id="@+id/btnAdBlock"
+                    style="@style/Entry"
+                    android:text="Блокировка рекламы"
+                    app:icon="@drawable/ic_e_adblock" />
+
+                <View android:layout_width="match_parent" android:layout_height="24dp" />
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- ─────────────────────── 🗂 УЗЛЫ ─────────────────────── -->
+        <ScrollView
+            android:id="@+id/pageNodes"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="20dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView style="@style/SectionTitle" android:text="Политика выбора"
+                    android:layout_marginTop="4dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="@drawable/bg_card"
+                    android:layout_marginBottom="16dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="8dp">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Автопереключение узлов"
+                            android:drawableStart="@drawable/ic_e_autoswitch"
+                            android:drawableTint="#8b949e"
+                            android:drawablePadding="12dp"
+                            android:gravity="center_vertical"
+                            android:textColor="#e6edf3"
+                            android:textSize="14sp" />
+                        <TextView
+                            android:id="@+id/ivInfoNodeAutoSwitch"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="48dp"
+                            android:minHeight="48dp"
+                            android:gravity="center"
+                            android:text="ⓘ"
+                            android:textColor="#4f8ef7"
+                            android:textSize="20sp"
+                            android:padding="8dp" />
+                        <Switch
+                            android:id="@+id/swNodeAutoSwitch"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="true" />
+                    </LinearLayout>
+
+                    <View android:layout_width="match_parent" android:layout_height="1dp"
+                        android:background="#30363d" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="8dp">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Циклический поиск узла"
+                            android:drawableStart="@drawable/ic_e_cyclic"
+                            android:drawableTint="#8b949e"
+                            android:drawablePadding="12dp"
+                            android:gravity="center_vertical"
+                            android:textColor="#e6edf3"
+                            android:textSize="14sp" />
+                        <TextView
+                            android:id="@+id/ivInfoCyclicSearch"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="48dp"
+                            android:minHeight="48dp"
+                            android:gravity="center"
+                            android:text="ⓘ"
+                            android:textColor="#4f8ef7"
+                            android:textSize="20sp"
+                            android:padding="8dp" />
+                        <Switch
+                            android:id="@+id/swCyclicSearch"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="false" />
+                    </LinearLayout>
+
+                    <View android:layout_width="match_parent" android:layout_height="1dp"
+                        android:background="#30363d" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="12dp"
+                        android:paddingTop="6dp"
+                        android:paddingBottom="6dp">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Sticky Session"
+                            android:drawableStart="@drawable/ic_e_sticky"
+                            android:drawableTint="#8b949e"
+                            android:drawablePadding="12dp"
+                            android:gravity="center_vertical"
+                            android:textColor="#e6edf3"
+                            android:textSize="14sp" />
+                        <TextView
+                            android:id="@+id/ivInfoSticky"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="48dp"
+                            android:minHeight="48dp"
+                            android:gravity="center"
+                            android:text="ⓘ"
+                            android:textColor="#4f8ef7"
+                            android:textSize="20sp"
+                            android:padding="8dp" />
+                        <Spinner
+                            android:id="@+id/spStickySession"
+                            android:layout_width="140dp"
+                            android:layout_height="wrap_content" />
+                    </LinearLayout>
+
+                    <View android:layout_width="match_parent" android:layout_height="1dp"
+                        android:background="#30363d" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="8dp">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Режим цепочки"
+                            android:drawableStart="@drawable/ic_e_chain"
+                            android:drawableTint="#8b949e"
+                            android:drawablePadding="12dp"
+                            android:gravity="center_vertical"
+                            android:textColor="#e6edf3"
+                            android:textSize="14sp" />
+                        <TextView
+                            android:id="@+id/ivInfoChainMode"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="48dp"
+                            android:minHeight="48dp"
+                            android:gravity="center"
+                            android:text="ⓘ"
+                            android:textColor="#4f8ef7"
+                            android:textSize="20sp"
+                            android:padding="8dp" />
+                        <Switch
+                            android:id="@+id/swChainMode"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="false" />
+                    </LinearLayout>
+
+                    <View android:layout_width="match_parent" android:layout_height="1dp"
+                        android:background="#30363d" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="8dp">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Многохоповая цепочка"
+                            android:drawableStart="@drawable/ic_e_chain"
+                            android:drawableTint="#8b949e"
+                            android:drawablePadding="12dp"
+                            android:gravity="center_vertical"
+                            android:textColor="#e6edf3"
+                            android:textSize="14sp" />
+                        <TextView
+                            android:id="@+id/ivInfoMultihop"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="48dp"
+                            android:minHeight="48dp"
+                            android:gravity="center"
+                            android:text="ⓘ"
+                            android:textColor="#4f8ef7"
+                            android:textSize="20sp"
+                            android:padding="8dp" />
+                        <Switch
+                            android:id="@+id/swMultihop"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:checked="false" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/rowMultihopCount"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="12dp"
+                        android:paddingTop="6dp"
+                        android:paddingBottom="6dp"
+                        android:visibility="gone">
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Число хопов"
+                            android:paddingStart="36dp"
+                            android:gravity="center_vertical"
+                            android:textColor="#e6edf3"
+                            android:textSize="14sp" />
+                        <Spinner
+                            android:id="@+id/spMultihopCount"
+                            android:layout_width="110dp"
+                            android:layout_height="wrap_content" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <TextView style="@style/SectionTitle" android:text="Серверы"
+                    android:layout_marginTop="0dp" />
+
+                <Button
+                    android:id="@+id/btnCatalog"
+                    style="@style/Entry"
+                    android:text="Каталог серверов"
+                    app:icon="@drawable/ic_e_catalog" />
+
+                <Button
+                    android:id="@+id/btnMyServers"
+                    style="@style/Entry"
+                    android:text="Мои серверы"
+                    app:icon="@drawable/ic_e_myservers" />
+
+                <TextView style="@style/SectionTitle" android:text="Добавить сервер" />
+
+                <EditText
+                    android:id="@+id/etNodeLink"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="vless://...  vmess://...  ss://..."
+                    android:textColorHint="#484f58"
+                    android:textColor="#e6edf3"
+                    android:background="@drawable/edit_text_bg"
+                    android:padding="12dp"
+                    android:inputType="text"
+                    android:layout_marginBottom="8dp" />
+
+                <Button
+                    android:id="@+id/btnAddNode"
+                    style="@style/Secondary"
+                    android:text="Добавить"
+                    android:layout_marginBottom="8dp" />
+
+                <!-- U-18: появляется, когда поле ссылки непусто (TextWatcher в initViews). -->
+                <Button
+                    android:id="@+id/btnAddAndConnect"
+                    style="@style/Secondary"
+                    android:text="@string/btn_add_and_connect"
+                    android:visibility="gone"
+                    android:layout_marginBottom="8dp" />
+
+                <!-- §4: ссылка от партнёра в роли «Выход» — отдельное действие, не общий пул. -->
+                <Button
+                    android:id="@+id/btnConnectChainPartner"
+                    style="@style/Secondary"
+                    android:text="Это ссылка от партнёра Вход-Выход"
+                    android:textColor="#f5a623"
+                    app:icon="@drawable/ic_e_partner"
+                    app:iconGravity="textStart"
+                    app:iconTint="#f5a623"
+                    app:iconPadding="12dp"
+                    android:layout_marginBottom="4dp" />
+
+                <!-- Асимметрия «Вход» vs «Выход»: у роли «Выход» помощь есть, у «Входа» не было. -->
+                <TextView
+                    android:id="@+id/tvChainPartnerHelp"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="ⓘ Чем это отличается от «Добавить»?"
+                    android:textColor="#7f8c9a"
+                    android:textSize="13sp"
+                    android:paddingTop="2dp"
+                    android:layout_marginBottom="8dp" />
+
+                <View android:layout_width="match_parent" android:layout_height="24dp" />
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- ─────────────────────── ⚙ ЕЩЁ ─────────────────────── -->
+        <ScrollView
+            android:id="@+id/pageMore"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="20dp"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView style="@style/SectionTitle" android:text="Диагностика"
+                    android:layout_marginTop="4dp" />
+
+                <Button
+                    android:id="@+id/btnDiagnostics"
+                    style="@style/Entry"
+                    android:text="Диагностика и логи"
+                    app:icon="@drawable/ic_e_diagnostics" />
+
+                <TextView style="@style/SectionTitle" android:text="Эксперименты" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="8dp">
+                    <Button
+                        android:id="@+id/btnServerRole"
+                        style="@style/Entry.NoChevron"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:text="Роль «Выход» (эксперимент)"
+                        app:icon="@drawable/ic_e_role" />
+                    <TextView
+                        android:id="@+id/ivInfoServerRole"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minWidth="48dp"
+                        android:minHeight="48dp"
+                        android:gravity="center"
+                        android:text="ⓘ"
+                        android:textColor="#4f8ef7"
+                        android:textSize="20sp"
+                        android:padding="8dp" />
+                </LinearLayout>
+
+                <TextView style="@style/SectionTitle" android:text="Аварийные" />
+
+                <Button
+                    android:id="@+id/btnEmergency"
+                    style="@style/Entry"
+                    android:text="Аварийная очистка"
+                    app:icon="@drawable/ic_e_emergency" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="⚡ APF · Adaptive PathFinder"
+                    android:textSize="11sp"
+                    android:textColor="#484f58"
+                    android:gravity="center"
+                    android:layout_marginTop="28dp" />
+
+                <View android:layout_width="match_parent" android:layout_height="24dp" />
+            </LinearLayout>
+        </ScrollView>
+    </FrameLayout>
+
+    <!-- ═══════════════ НИЖНЯЯ НАВИГАЦИЯ (кастомная) ═══════════════ -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#30363d" />
+
+    <LinearLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#0d1117"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp">
+
+        <LinearLayout
+            android:id="@+id/tabHome"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:paddingTop="6dp"
+            android:paddingBottom="4dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_nav_home"
+                android:tint="@color/nav_tab_tint"
+                android:duplicateParentState="true"
+                android:contentDescription="Главная" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Главная"
+                android:textSize="11sp"
+                android:textColor="@color/nav_tab_tint"
+                android:duplicateParentState="true"
+                android:layout_marginTop="2dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/tabProtect"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:paddingTop="6dp"
+            android:paddingBottom="4dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_nav_shield"
+                android:tint="@color/nav_tab_tint"
+                android:duplicateParentState="true"
+                android:contentDescription="Защита" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Защита"
+                android:textSize="11sp"
+                android:textColor="@color/nav_tab_tint"
+                android:duplicateParentState="true"
+                android:layout_marginTop="2dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/tabNodes"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:paddingTop="6dp"
+            android:paddingBottom="4dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_nav_nodes"
+                android:tint="@color/nav_tab_tint"
+                android:duplicateParentState="true"
+                android:contentDescription="Узлы" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Узлы"
+                android:textSize="11sp"
+                android:textColor="@color/nav_tab_tint"
+                android:duplicateParentState="true"
+                android:layout_marginTop="2dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/tabMore"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:paddingTop="6dp"
+            android:paddingBottom="4dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_nav_more"
+                android:tint="@color/nav_tab_tint"
+                android:duplicateParentState="true"
+                android:contentDescription="Ещё" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Ещё"
+                android:textSize="11sp"
+                android:textColor="@color/nav_tab_tint"
+                android:duplicateParentState="true"
+                android:layout_marginTop="2dp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

@@ -1,0 +1,58 @@
+# --- Build outputs / binaries (published only via Releases) ---
+*.exe
+*.dll
+*.so
+*.aar
+*.apk
+*.jar
+*.syso
+*.test
+*.out
+*.prof
+source/bin/
+source/dist/
+source/gui/build/bin/
+source/gui/frontend/dist/
+source/gui/frontend/node_modules/
+# third-party Windows binaries for the installer (sing-box.exe, libcronet.dll) — see docs/BUILD.md
+/windows/
+
+# --- Go dependencies (restore with `go mod vendor` + tools/patch_vendor.ps1) ---
+source/vendor/
+
+# --- Android build state ---
+android/android-project/.gradle/
+android/android-project/build/
+android/android-project/app/build/
+android/android-project/app/libs/
+android/android-project/app/src/main/jniLibs/
+android/android-project/local.properties
+*.keystore
+*.jks
+
+# --- Coverage / reports / logs ---
+*.cov
+*_cover.html
+cover*.html
+coverage*
+*.log
+*_log.txt
+
+# --- Secrets and runtime data (never commit) ---
+webui_token
+server_identity.json
+server_relay_credentials.json
+relay_cert.pem
+relay_key.pem
+config.json
+nodes_cache.json
+*.env
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+.vs/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
