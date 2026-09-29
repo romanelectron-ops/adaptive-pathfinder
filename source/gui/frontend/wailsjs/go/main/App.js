@@ -372,6 +372,13 @@ export function HarvestFromText(arg1) {
   return window['go']['main']['App']['HarvestFromText'](arg1);
 }
 
+// Предупреждение «эта ссылка роли «Выход» не сработает из другой сети» (приватный/loopback/CGNAT
+// хост) — дописано вручную 2026-09-29 (wails generate на хосте запрещён), см. gui/app.go
+// LinkHostWarning и internal/netutil/hostscope.go.
+export function LinkHostWarning(arg1) {
+  return window['go']['main']['App']['LinkHostWarning'](arg1);
+}
+
 // W3 (ТЗ APF v1.5 §2/§5, лот L2-WAILS-B, 2026-09-14): двухклассовое избранное (user/system) +
 // интервал пересмотра каталога — дописано вручную (wails generate на хосте запрещён), см.
 // gui/app.go.

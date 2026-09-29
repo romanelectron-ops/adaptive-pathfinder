@@ -170,6 +170,9 @@ export function HarvestNow():Promise<void>;
 export function HarvestStatus():Promise<any>;
 // W5 paste-харвест — дописано вручную 2026-09-23, см. App.js/gui/app.go.
 export function HarvestFromText(arg1:string):Promise<void>;
+// Предупреждение о приватном/loopback/CGNAT хосте ссылки роли «Выход» — дописано вручную
+// 2026-09-29, см. App.js/gui/app.go LinkHostWarning.
+export function LinkHostWarning(arg1:string):Promise<string>;
 // W3 (ТЗ APF v1.5 §2/§5, лот L2-WAILS-B, 2026-09-14): дописано вручную, см. App.js.
 export function FavoriteOrigin(arg1:string):Promise<string>;
 export function UserFavoriteIDs():Promise<Array<string>>;

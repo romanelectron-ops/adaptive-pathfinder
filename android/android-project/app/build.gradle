@@ -13,8 +13,8 @@ android {
         targetSdk 34
         // Версия обязана совпадать с internal/version.Version — иначе отчёт об испытании
         // невозможно соотнести со сборкой (дефект D-A8).
-        versionCode 119
-        versionName "1.1.9"
+        versionCode 120
+        versionName "1.1.10"
 
         ndk {
             // Целевое устройство испытаний — arm64-v8a. armeabi-v7a добавлять только вместе

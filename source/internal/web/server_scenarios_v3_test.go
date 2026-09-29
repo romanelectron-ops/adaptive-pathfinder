@@ -591,6 +591,84 @@ func TestApiServerRoleBuildLink_Success_NoRelay(t *testing.T) {
 	}
 }
 
+// Живой инцидент 2026-09-29: прямая ссылка на приватный host (10.x.x.x ноутбука внутри сети
+// раздачи телефона) собиралась без единого предупреждения — партнёр «Вход» из другой сети
+// получал dial tcp ...: i/o timeout без объяснения причины. Теперь ответ обязан содержать
+// непустое поле "warning" для такого host'а (см. netutil.LinkHostWarning).
+func TestApiServerRoleBuildLink_PrivateHost_HasWarning(t *testing.T) {
+	s := newTestServer(t)
+	wGen := testPOST(s, s.apiServerRoleGenerateIdentity, "")
+	var genResp struct {
+		Identity singbox.ServerIdentity `json:"identity"`
+	}
+	json.Unmarshal(wGen.Body.Bytes(), &genResp) //nolint
+
+	idJSON, _ := json.Marshal(genResp.Identity)
+	body := fmt.Sprintf(`{"identity":%s,"host":"10.0.0.37","listen_port":8443,"label":"TestLink"}`, idJSON)
+	w := testPOST(s, s.apiServerRoleBuildLink, body)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp) //nolint
+	if resp["warning"] == "" {
+		t.Error("ожидалось непустое warning для приватного host (10.0.0.37)")
+	}
+	if !strings.Contains(resp["warning"], "LAN") {
+		t.Errorf("warning не похож на предупреждение про локальную сеть: %q", resp["warning"])
+	}
+}
+
+// Публичный host — warning должен остаться пустым (нечего предупреждать), поле при этом
+// присутствует в ответе (json:"warning" без omitempty).
+func TestApiServerRoleBuildLink_PublicHost_NoWarning(t *testing.T) {
+	s := newTestServer(t)
+	wGen := testPOST(s, s.apiServerRoleGenerateIdentity, "")
+	var genResp struct {
+		Identity singbox.ServerIdentity `json:"identity"`
+	}
+	json.Unmarshal(wGen.Body.Bytes(), &genResp) //nolint
+
+	idJSON, _ := json.Marshal(genResp.Identity)
+	body := fmt.Sprintf(`{"identity":%s,"host":"203.0.113.5","listen_port":8443,"label":"TestLink"}`, idJSON)
+	w := testPOST(s, s.apiServerRoleBuildLink, body)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp) //nolint
+	if resp["warning"] != "" {
+		t.Errorf("не ожидалось warning для публичного host: %q", resp["warning"])
+	}
+}
+
+// relay_addr непустой — ссылка адресует посредника, а не body.Host напрямую, поэтому
+// приватность body.Host не должна давать warning, даже если он совпадает с примером выше.
+func TestApiServerRoleBuildLink_PrivateHostWithRelay_NoWarning(t *testing.T) {
+	s := newTestServer(t)
+	wGen := testPOST(s, s.apiServerRoleGenerateIdentity, "")
+	var genResp struct {
+		Identity singbox.ServerIdentity `json:"identity"`
+	}
+	json.Unmarshal(wGen.Body.Bytes(), &genResp) //nolint
+
+	idJSON, _ := json.Marshal(genResp.Identity)
+	body := fmt.Sprintf(`{"identity":%s,"host":"10.0.0.37","listen_port":8443,`+
+		`"relay_addr":"198.51.100.9:9000","relay_fingerprint":"deadbeef"}`, idJSON)
+	w := testPOST(s, s.apiServerRoleBuildLink, body)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp) //nolint
+	if resp["error"] != "" {
+		t.Fatalf("unexpected error: %s", resp["error"])
+	}
+	if resp["warning"] != "" {
+		t.Errorf("relay-режим не должен предупреждать про приватность host: %q", resp["warning"])
+	}
+}
+
 // Relay-режим без обязательного отпечатка TLS-сертификата (relayFingerprint) — честная
 // ошибка, а не «тихая» ссылка, по которой партнёр гарантированно не подключится
 // (fail-closed, см. комментарий у BuildServerRoleLink в internal/engine/server_role.go).

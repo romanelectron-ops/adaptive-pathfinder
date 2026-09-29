@@ -343,7 +343,7 @@ func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.
 		e.serverRoleMu.Unlock()
 
 		e.reconcileServerRoleExit(listenPort)
-		e.log(fmt.Sprintf("Роль «Выход»: конфигурация обновлена без разрыва публичного порта %d (лимит подключений: %d)", listenPort, maxClients))
+		e.log(fmt.Sprintf("Роль «Выход»: конфигурация обновлена без разрыва публичного порта %d (лимит устройств: %d)", listenPort, maxClients))
 		return nil
 	}
 
@@ -397,6 +397,9 @@ func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.
 			exitClient := relay.NewExitClient(e.cfg.RelayServerAddr, exitID, relayToken,
 				fmt.Sprintf("127.0.0.1:%d", listenPort), e.cfg.RelayServerFingerprint)
 			exitClient.OnLog = e.log
+			// Relay-путь идёт через тот же лимит УСТРОЙСТВ, что и прямой (ТЗ §10.2), и получает от
+			// посредника адрес настоящего «Входа» — иначе все они выглядели бы как 127.0.0.1.
+			exitClient.DialLocal = admissionProxy.AdmitAndDial
 			exitCtx, exitCancel := context.WithCancel(context.Background())
 			e.serverRoleMu.Lock()
 			e.serverRoleExit = exitClient
@@ -409,7 +412,7 @@ func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.
 		}
 	}
 
-	e.log(fmt.Sprintf("Роль «Выход»: слушаю порт %d (лимит подключений: %d)", listenPort, maxClients))
+	e.log(fmt.Sprintf("Роль «Выход»: слушаю порт %d (лимит устройств: %d)", listenPort, maxClients))
 	return nil
 }
 
@@ -423,6 +426,7 @@ func (e *Engine) reconcileServerRoleExit(listenPort int) {
 	currentAddr := e.serverRoleExitAddr
 	currentFingerprint := e.serverRoleExitFingerprint
 	prevExitCancel := e.serverRoleExitCancel
+	admission := e.serverRoleAdmission
 	e.serverRoleMu.Unlock()
 
 	wantAddr := e.cfg.RelayServerAddr
@@ -452,6 +456,9 @@ func (e *Engine) reconcileServerRoleExit(listenPort int) {
 	}
 	exitClient := relay.NewExitClient(wantAddr, exitID, relayToken, fmt.Sprintf("127.0.0.1:%d", listenPort), wantFingerprint)
 	exitClient.OnLog = e.log
+	if admission != nil {
+		exitClient.DialLocal = admission.AdmitAndDial // см. StartServerRole: лимит устройств и адрес «Входа»
+	}
 	exitCtx, exitCancel := context.WithCancel(context.Background())
 	e.serverRoleMu.Lock()
 	e.serverRoleExit = exitClient
@@ -551,7 +558,8 @@ func (e *Engine) GetServerRoleStatus() map[string]interface{} {
 
 	result := map[string]interface{}{"running": running, "listen_port": port}
 	if running && admission != nil {
-		result["connected_clients_count"] = admission.Count()
+		result["connected_clients_count"] = admission.Count() // УСТРОЙСТВА (у кого есть открытое соединение)
+		result["connections_count"] = admission.ConnCount()   // TCP-соединения — для диагностики
 		if ip := admission.LastRemoteIP(); ip != "" {
 			result["last_client_ip"] = ip
 		}

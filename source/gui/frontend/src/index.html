@@ -1065,6 +1065,12 @@
               <button class="btn btn-ghost" onclick="doCopyServerLink()">Копировать</button>
               <i class="help-ico" data-help="Копирует ссылку в буфер обмена — дальше отправьте её партнёру любым удобным способом (мессенджер, почта). В ссылке — UUID и другие параметры доступа к этому серверу: тот, кто её получит, сможет подключаться как авторизованный клиент, поэтому передавайте её так же осторожно, как пароль.">?</i>
             </div>
+            <!-- Живой инцидент 2026-09-29: приватный/loopback/CGNAT хост ссылки — партнёр из
+                 другой сети не достучится (dial tcp ...: i/o timeout). Текст даёт
+                 App.LinkHostWarning (netutil.LinkHostWarning); стиль — тот же, что у
+                 #node-check-ks-warn (жёлтая левая полоса), отдельного класса предупреждения
+                 на этой странице нет. -->
+            <div id="sr-link-warn" style="display:none;background:var(--bg3);border:1px solid var(--bd-strong);border-left:3px solid var(--ye);border-radius:var(--r);padding:8px 12px;margin-top:8px;font-size:12.5px;line-height:1.5;color:var(--t1);font-weight:600"></div>
             <div id="sr-link-availability" style="font-size:12px;color:var(--t2);margin-top:6px"></div>
           </div>
         </div>
@@ -2868,6 +2874,12 @@ let srIdentity = null
 // лишний round-trip к App.ServerRoleStatus() при каждой сборке ссылки (см. doGenerateServerLink).
 // Источник истины всё равно updateServerRoleStatusUI — она одна пишет это поле.
 let srRunning = false
+// Живой инцидент 2026-09-29: последнее предупреждение netutil.LinkHostWarning по ссылке,
+// которая СЕЙЧАС показана в панели (пустая строка — предупреждать не о чем). Хранится отдельно,
+// потому что подпись «можно ли передавать ссылку» (updateServerLinkAvailabilityNote) перерисовывается
+// каждые 5с по опросу статуса роли и не должна каждый раз заново дёргать бэкенд ради одного и
+// того же ответа. Единственный писатель — doGenerateServerLink.
+let srLinkWarning = ''
 
 window.loadServerRolePage = async function() {
   try {
@@ -2940,6 +2952,16 @@ function updateServerLinkAvailabilityNote() {
   const el = document.getElementById('sr-link-availability')
   const panel = document.getElementById('sr-link-panel')
   if (!el || !panel || panel.style.display === 'none') return
+  // Живой инцидент 2026-09-29: безусловное «уже можно передавать» было ложью, когда хост ссылки —
+  // приватный адрес (10.x.x.x и т.п.): партнёр из ДРУГОЙ сети получал dial tcp ...: i/o timeout без
+  // объяснения. Пока есть предупреждение (srLinkWarning), честно говорим «только в той же сети /
+  // нужен внешний адрес или relay», а не «можно передавать».
+  if (srLinkWarning) {
+    el.textContent = srRunning
+      ? '⚠ Роль «Выход» запущена, но эта ссылка сработает у партнёра «Вход» только в той же сети, что и это устройство (см. предупреждение выше). Для другой сети нужен внешний адрес хоста или relay.'
+      : 'ℹ Роль «Выход» ещё не запущена. После запуска эта ссылка сработает у партнёра «Вход» только в той же сети, что и это устройство (см. предупреждение выше) — для другой сети нужен внешний адрес хоста или relay.'
+    return
+  }
   el.textContent = srRunning
     ? '✓ Роль «Выход» запущена — эту ссылку уже можно передавать партнёру «Вход».'
     : 'ℹ Роль «Выход» ещё не запущена — ссылка заработает у партнёра только после того, как вы нажмёте «Запустить» выше.'
@@ -3133,8 +3155,28 @@ window.doGenerateServerLink = async function(silent) {
     const link = await App.ServerRoleBuildLink(srIdentity, host, port, realityDest, label, relayAddr, relayFingerprint)
     document.getElementById('sr-link').value = link
     document.getElementById('sr-link-panel').style.display = ''
+    // Живой инцидент 2026-09-29: ссылка на приватный/loopback/CGNAT адрес собирается «успешно», но
+    // партнёр из другой сети до неё не достучится. Предупреждение считаем ТОЛЬКО для прямой
+    // ссылки (relayAddr пуст): при заданном relay ссылка адресует посредника, а не host, и
+    // топология сети этого устройства партнёра не касается (то же правило, что в
+    // internal/web/server.go apiServerRoleBuildLink). Сбой вызова (например, старая сборка без
+    // биндинга) не должен ронять сборку ссылки — это подсказка, а не условие работы.
+    let warn = ''
+    if (!relayAddr) {
+      try { warn = (await App.LinkHostWarning(host)) || '' } catch (e) { warn = '' }
+    }
+    srLinkWarning = warn
+    const warnEl = document.getElementById('sr-link-warn')
+    if (warnEl) {
+      warnEl.textContent = warn ? ('⚠ Адрес «' + host + '»: ' + warn) : ''
+      warnEl.style.display = warn ? '' : 'none'
+    }
     updateServerLinkAvailabilityNote()
-    setFb('✓ Ссылка собрана', 'ok')
+    if (warn) {
+      setFb('⚠ Ссылка собрана, но работает только в одной сети с этим устройством — см. предупреждение ниже', '')
+    } else {
+      setFb('✓ Ссылка собрана', 'ok')
+    }
     return link
   } catch (e) {
     setFb('✗ Не удалось собрать ссылку: ' + e, 'err')

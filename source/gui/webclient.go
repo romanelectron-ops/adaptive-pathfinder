@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,8 +48,70 @@ type webClient struct {
 func newWebClient(port int) *webClient {
 	return &webClient{
 		baseURL: fmt.Sprintf("http://127.0.0.1:%d", port),
-		http:    netguard.Client(5 * time.Second),
+		// Общего таймаута у клиента НЕТ намеренно: раньше стоял единый netguard.Client(5s), и
+		// запуск роли «Выход» (остановка прежней роли + UPnP + 2×netsh + ожидание sing-box до
+		// 30 с) стабильно упирался в него — окно показывало «context deadline exceeded», хотя
+		// служба запуск успешно заканчивала (живой инцидент ПК 2026-09-29). Срок ожидания теперь
+		// свой у каждого запроса — см. requestTimeout/newRequest.
+		http: netguard.Client(0),
 	}
+}
+
+// Сроки ожидания ответа службы. Опрос состояния (GET, раз в секунды) должен падать быстро —
+// иначе зависшая служба вешает интерфейс; действия (POST) законно бывают долгими: часть из
+// них ходит в сеть или ждёт запуска/остановки процесса, и обрыв на середине выглядит для
+// человека как отказ, хотя служба продолжает и доделывает дело.
+const (
+	timeoutPoll    = 5 * time.Second   // GET-опросы состояния
+	timeoutAction  = 30 * time.Second  // обычные POST-действия
+	timeoutNetwork = 60 * time.Second  // проверки, ходящие в интернет
+	timeoutRoleRun = 90 * time.Second  // запуск роли «Выход», подключение партнёра, резервные туннели
+	timeoutCatalog = 200 * time.Second // обновление каталога (в режиме владельца — до 3 минут, app.go)
+)
+
+// longRequestTimeouts — пути, которым нужно больше, чем обычному действию. Ключ — путь без
+// query-строки. Сроки взяты не «на глаз», а из того, сколько те же операции получают в режиме
+// владельца (app.go: RunCanaryTest 25 с, RefreshCatalog 3 мин), плюс запас.
+var longRequestTimeouts = map[string]time.Duration{
+	"/api/server-role/start":      timeoutRoleRun,
+	"/api/chain-partner/connect":  timeoutRoleRun,
+	"/api/fallback/activate":      timeoutRoleRun,
+	"/api/fallback/auto-select":   timeoutRoleRun,
+	"/api/catalog/refresh":        timeoutCatalog,
+	"/api/dpi/canary-test":        timeoutNetwork,
+	"/api/dpi/shadowtls-auto-sni": timeoutNetwork,
+	"/api/leakguard/dns-test":     timeoutNetwork,
+	"/api/paid-providers/test":    timeoutNetwork,
+	"/api/emergency/wipe":         timeoutNetwork,
+	"/api/logs/export":            timeoutNetwork,
+}
+
+// requestTimeout — срок ожидания ответа для запроса method+path (path без query-строки).
+func requestTimeout(method, path string) time.Duration {
+	if d, ok := longRequestTimeouts[path]; ok {
+		return d
+	}
+	if method == http.MethodGet {
+		return timeoutPoll
+	}
+	return timeoutAction
+}
+
+// newRequest строит запрос с контекстом-таймаутом по requestTimeout. Вызывающая сторона
+// ОБЯЗАНА вызвать cancel после того, как прочитала тело ответа (defer cancel()) — раньше
+// срок отсчитывал http.Client.Timeout (он тоже охватывал чтение тела); контекст ведёт себя так же.
+func (c *webClient) newRequest(method, path string, body io.Reader) (*http.Request, context.CancelFunc, error) {
+	route := path
+	if i := strings.IndexByte(route, '?'); i >= 0 {
+		route = route[:i]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout(method, route))
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return req, cancel, nil
 }
 
 // webUITokenFilePath — тот же путь, что internal/web/server.go:authTokenFilePath()
@@ -122,10 +185,11 @@ func (c *webClient) doAuthorized(req *http.Request) (*http.Response, error) {
 }
 
 func (c *webClient) getJSON(path string, out interface{}) error {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	req, cancel, err := c.newRequest(http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
+	defer cancel()
 	resp, err := c.doAuthorized(req)
 	if err != nil {
 		return err
@@ -143,10 +207,11 @@ func (c *webClient) postJSON(path string, body interface{}, out interface{}) err
 		}
 		r = bytes.NewReader(data)
 	}
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, r)
+	req, cancel, err := c.newRequest(http.MethodPost, path, r)
 	if err != nil {
 		return err
 	}
+	defer cancel()
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.doAuthorized(req)
 	if err != nil {
@@ -880,10 +945,11 @@ func (c *webClient) GetRemovedNodeIDs() []string {
 // раньше был единственным местом в файле, минующим getJSON/postJSON (голый c.http.Get без
 // заголовка), поэтому переведён на doAuthorized отдельно.
 func (c *webClient) ExportLogBytes() ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/logs/export", nil)
+	req, cancel, err := c.newRequest(http.MethodGet, "/api/logs/export", nil)
 	if err != nil {
 		return nil, err
 	}
+	defer cancel()
 	resp, err := c.doAuthorized(req)
 	if err != nil {
 		return nil, err

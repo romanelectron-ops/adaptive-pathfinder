@@ -4430,7 +4430,7 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(etRealityDest)
         val etMaxClients = EditText(this).apply {
-            hint = "Лимит подключённых «Входов» (пусто = 2 по умолчанию для телефона)"
+            hint = "Лимит устройств «Вход» (пусто = 2 по умолчанию для телефона)"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
         }
         container.addView(etMaxClients)
@@ -4633,6 +4633,18 @@ class MainActivity : AppCompatActivity() {
             setTextIsSelectable(true)
         }
         container.addView(etLink)
+        // Живой инцидент 2026-09-29: ссылка на приватный адрес (10.x.x.x, 192.168.x.x) собирается
+        // «успешно», но «Вход» из ДРУГОЙ сети до неё не достучится (dial tcp ...: i/o timeout) —
+        // причину нигде не объясняли. Текст даёт ApfCore.linkHostWarning; цвет — тот же
+        // оранжевый предупреждения, что у плашки про надёжность роли в начале этого диалога.
+        // Скрыт, пока нечего сказать (нет ссылки или адрес публичный).
+        val tvLinkWarning = TextView(this).apply {
+            setTextColor(getColor(android.R.color.holo_orange_light))
+            textSize = 12f
+            setPadding(0, 0, 0, 8)
+            visibility = View.GONE
+        }
+        container.addView(tvLinkWarning)
         container.addView(Button(this).apply {
             text = "Собрать ссылку"
             setOnClickListener {
@@ -4672,6 +4684,19 @@ class MainActivity : AppCompatActivity() {
                     )
                 } else {
                     etLink.setText(link)
+                    // Предупреждение только для прямой ссылки: при заданном relay ссылка адресует
+                    // посредника, а не host (см. комментарий выше), и топология сети этого
+                    // телефона партнёра не касается. Сбой вызова моста не должен скрывать уже
+                    // собранную ссылку — это подсказка, а не условие работы.
+                    val warning = if (relayAddr.isEmpty()) {
+                        try { ApfCore.linkHostWarning(host) } catch (e: Exception) { "" }
+                    } else ""
+                    if (warning.isEmpty()) {
+                        tvLinkWarning.visibility = View.GONE
+                    } else {
+                        tvLinkWarning.text = "⚠ Адрес «$host»: $warning"
+                        tvLinkWarning.visibility = View.VISIBLE
+                    }
                 }
             }
         })

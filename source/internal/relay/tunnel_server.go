@@ -79,6 +79,9 @@ type exitSession struct {
 	writeMu  sync.Mutex
 	lastSeen atomic.Int64 // unix nano
 
+	// wantsSrc — «Выход» прислал CAPS src: NEWSTREAM для него дополняется адресом «Входа».
+	wantsSrc atomic.Bool
+
 	closeOnce sync.Once
 	done      chan struct{}
 }
@@ -397,6 +400,14 @@ func (s *RelayServer) runExitControl(sess *exitSession) {
 		}
 		if strings.TrimSpace(line) == cmdPong {
 			sess.lastSeen.Store(time.Now().UnixNano())
+			continue
+		}
+		if f := strings.Fields(line); len(f) > 0 && f[0] == cmdCaps {
+			for _, c := range f[1:] {
+				if c == capSrc {
+					sess.wantsSrc.Store(true)
+				}
+			}
 		}
 	}
 }
@@ -467,7 +478,12 @@ func (s *RelayServer) handleEntry(conn net.Conn, ip string, fields []string) {
 		s.pendingMu.Unlock()
 	}
 
-	if err := exitSess.writeLine(cmdNewStream + " " + sessionID); err != nil {
+	newStream := cmdNewStream + " " + sessionID
+	if exitSess.wantsSrc.Load() && ip != "" {
+		// Адрес «Входа» — для лимита устройств на стороне «Выхода» (см. cmdCaps).
+		newStream += " " + ip
+	}
+	if err := exitSess.writeLine(newStream); err != nil {
 		cleanup()
 		writeLine(conn, cmdErr+" exit unreachable")
 		conn.Close()

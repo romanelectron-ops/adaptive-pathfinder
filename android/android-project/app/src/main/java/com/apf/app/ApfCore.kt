@@ -834,6 +834,16 @@ object ApfCore {
     fun getLocalIpCandidatesJson(): String = Androidbridge.getLocalIPCandidatesJSON()
 
     /**
+     * Предупреждение «эта ссылка роли «Выход» не сработает из другой сети» для хоста ссылки:
+     * приватный адрес LAN (10.x.x.x, 192.168.x.x), loopback, CGNAT или «любой интерфейс».
+     * Пустая строка — предупреждать не о чем (публичный IP или имя хоста). Живой инцидент
+     * 2026-09-29: ссылка на 10.x.x.x собиралась «успешно», а партнёр из другой Wi-Fi сети
+     * получал dial tcp ...: i/o timeout без единого намёка на причину. Чистая функция —
+     * не требует init() и запущенной роли.
+     */
+    fun linkHostWarning(host: String): String = Androidbridge.linkHostWarning(host)
+
+    /**
      * JSON {"method":int,"explanation":"...","external_host":"...","external_port":int,"has_address":bool}
      * или {"error":"..."}. UPnP-часть требует активного WifiManager.MulticastLock со стороны
      * вызывающего (см. MainActivity.kt, doDetectReachability) — иначе Android может глушить

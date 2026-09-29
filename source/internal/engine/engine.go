@@ -4484,6 +4484,25 @@ func (e *Engine) recordLastActiveNode(id string) {
 
 // ─── Переключение (tunnel-architect FSM) ─────────────────────────────────────
 
+// chainPartnerUnreachableMessage — текст лога «партнёр цепочки Вход-Выход недоступен».
+//
+// Живой инцидент 2026-09-29: партнёр «Выход» отдал ссылку на свой приватный адрес 10.x.x.x
+// (внутри его Wi-Fi), а телефон-«Вход» сидел в ДРУГОЙ сети — каждая попытка кончалась
+// dial tcp ...: i/o timeout, и этот лог повторялся бесконечно, ни словом не объясняя, ПОЧЕМУ
+// партнёр недостижим: приватный адрес снаружи своей сети недостижим в принципе. Если адрес узла
+// приватный/loopback/CGNAT (netutil.LinkHostWarning), дописываем причину — пользователь видит её
+// сразу в журнале и в статусе Android, а не гадает про «сломанный sing-box». Для публичного адреса
+// и имени хоста текст прежний (предупреждать не о чем: недоступность там — вопрос файрвола/NAT
+// партнёра, а не топологии сети). Вынесено в чистую функцию, чтобы проверяться без движка.
+func chainPartnerUnreachableMessage(name, address string) string {
+	msg := fmt.Sprintf("⚠ Партнёр цепочки Вход-Выход «%s» недоступен — жду восстановления, "+
+		"не подменяю случайным узлом из общего пула", name)
+	if w := netutil.LinkHostWarning(address); w != "" {
+		msg += fmt.Sprintf(". Возможная причина — адрес партнёра «%s»: %s", address, w)
+	}
+	return msg
+}
+
 func (e *Engine) emergencySwitch() {
 	// ТЗ v1.3 F4 (BB-4): single-flight. Watchdog (level-trigger), post-connect health-check и
 	// monitor могут дёрнуть переключение одновременно; второй вызов раньше начинал ВТОРОЙ
@@ -4637,8 +4656,7 @@ func (e *Engine) emergencySwitch() {
 	// monitor()/Watchdog вызовет emergencySwitch снова, если партнёр всё ещё недоступен —
 	// естественный периодический ретрай без отдельного цикла.
 	if cur != nil && cur.IsChainPartner {
-		e.log(fmt.Sprintf("⚠ Партнёр цепочки Вход-Выход «%s» недоступен — жду восстановления, "+
-			"не подменяю случайным узлом из общего пула", cur.Name))
+		e.log(chainPartnerUnreachableMessage(cur.Name, cur.Address))
 		if err := e.connectNode(cur); err == nil {
 			e.fsm.HandleSuccess(time.Duration(cur.Latency) * time.Millisecond)
 		} else if classifyConnectFailure(err) == failureNode {

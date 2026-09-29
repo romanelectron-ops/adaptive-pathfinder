@@ -19,6 +19,7 @@ import (
 	"github.com/apf/adaptive-pathfinder/internal/harvester"
 	"github.com/apf/adaptive-pathfinder/internal/hotkey"
 	"github.com/apf/adaptive-pathfinder/internal/models"
+	"github.com/apf/adaptive-pathfinder/internal/netutil"
 	"github.com/apf/adaptive-pathfinder/internal/relay"
 	"github.com/apf/adaptive-pathfinder/internal/singbox"
 	"github.com/apf/adaptive-pathfinder/internal/singleinstance"
@@ -1608,6 +1609,22 @@ func mapToIdentity(m map[string]interface{}) (singbox.ServerIdentity, error) {
 // без делегирования через a.remote, в отличие от остальных ServerRole*-методов выше.
 func (a *App) ServerRoleLocalIPCandidates() []singbox.LocalIPCandidate {
 	return singbox.LocalIPCandidates()
+}
+
+// LinkHostWarning — живой инцидент 2026-09-29: экран роли «Выход» собирал ссылку на локальный
+// адрес 10.x.x.x ноутбука и подписывал её «эту ссылку уже можно передавать партнёру «Вход»» —
+// а партнёр в ДРУГОЙ Wi-Fi сети получал dial tcp ...: i/o timeout без единого намёка на
+// причину (частный адрес существует только внутри своей сети, снаружи он недостижим в
+// принципе). Возвращает русский текст предупреждения либо "" (публичный IP / имя хоста —
+// предупреждать не о чем, см. netutil.LinkHostWarning про то, почему имя не резолвим).
+//
+// Чистая функция без обращения к движку/службе: классификация адреса не требует состояния и
+// одинакова и у владельца движка, и у наблюдателя (окно, ходящее в Web UI владельца), поэтому
+// БЕЗ делегирования через a.remote. Предупреждение нарочно считается отдельным вызовом, а не
+// берётся из ответа ServerRoleBuildLink: тот возвращает только строку-ссылку (у наблюдателя её
+// отдаёт a.remote, gui/webclient.go), и менять его контракт ради одного поля — лишний риск.
+func (a *App) LinkHostWarning(host string) string {
+	return netutil.LinkHostWarning(host)
 }
 
 // ServerRoleDetectReachability — живой запрос пользователя 2026-08-28: «каждый должен

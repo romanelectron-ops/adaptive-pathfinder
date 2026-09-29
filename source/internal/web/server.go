@@ -27,6 +27,7 @@ import (
 	"github.com/apf/adaptive-pathfinder/internal/harvester"
 	"github.com/apf/adaptive-pathfinder/internal/models"
 	"github.com/apf/adaptive-pathfinder/internal/netguard"
+	"github.com/apf/adaptive-pathfinder/internal/netutil"
 	"github.com/apf/adaptive-pathfinder/internal/singbox"
 	"github.com/apf/adaptive-pathfinder/internal/version"
 )
@@ -1674,7 +1675,17 @@ func (s *Server) apiServerRoleBuildLink(w http.ResponseWriter, r *http.Request) 
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"link": link})
+	// warning: живой инцидент 2026-09-29 — ссылка на приватный/loopback/CGNAT хост
+	// (например 10.x.x.x ноутбука внутри сети раздачи телефона) молча "собирается", а
+	// партнёр «Вход» из другой сети получает dial tcp ...: i/o timeout без единого намёка на
+	// причину. Предупреждение считаем ТОЛЬКО для прямой ссылки — когда указан relay_addr,
+	// ссылка адресует посредника (apf-relay), а не body.Host напрямую, так что топология
+	// хоста «Выхода» партнёра не касается.
+	warning := ""
+	if strings.TrimSpace(body.RelayAddr) == "" {
+		warning = netutil.LinkHostWarning(body.Host)
+	}
+	json.NewEncoder(w).Encode(map[string]string{"link": link, "warning": warning})
 }
 
 // apiServerRoleStart — POST {identity, listen_port, reality_dest}: поднимает роль «Выход».

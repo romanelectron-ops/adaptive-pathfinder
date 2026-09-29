@@ -47,6 +47,13 @@ type ExitClient struct {
 	RelayFingerprint string
 	OnLog            func(string)
 
+	// DialLocal — необязательный «умный» путь к локальной цели: вместо обычного звонка на
+	// LocalTarget получает адрес настоящего «Входа» (sourceIP; пусто — relay не передал его) и
+	// сам решает, пускать ли (лимит устройств роли «Выход») и куда звонить. Обычно это
+	// AdmissionProxy.AdmitAndDial. nil — прежнее поведение: net.Dial на LocalTarget.
+	// Когда задан, ExitClient сообщает relay «CAPS src», чтобы получать адрес «Входа».
+	DialLocal func(ctx context.Context, sourceIP string) (net.Conn, error)
+
 	mu       sync.Mutex
 	running  bool
 	// connected — [консилиум, HIGH, находка №11, TZ_RELAY_HARDENING_2026-08-29.md кластер H]
@@ -171,6 +178,15 @@ func (c *ExitClient) runOnce(ctx context.Context) (connected bool, err error) {
 	}
 	c.log("relay: EXIT %s зарегистрирован на %s", c.ExitID, c.RelayAddr)
 
+	// Сообщаем relay, что умеем принимать адрес источника (см. cmdCaps). Пишем ДО serve —
+	// пока PONG-ответы (единственные другие записи в conn) ещё не начались, писатель один.
+	// Ошибка записи не фатальна для протокола, но control-канал после неё всё равно мёртв.
+	if c.DialLocal != nil {
+		if err := writeLine(conn, cmdCaps+" "+capSrc); err != nil {
+			return false, fmt.Errorf("write CAPS: %w", err)
+		}
+	}
+
 	c.setConnected(true)
 	defer c.setConnected(false)
 
@@ -197,11 +213,17 @@ func (c *ExitClient) serve(ctx context.Context, conn net.Conn) error {
 				return fmt.Errorf("write PONG: %w", werr)
 			}
 		case cmdNewStream:
-			if len(fields) != 2 {
+			// Два поля — relay без адреса источника (старая версия либо «Выход» не просил
+			// CAPS); три — «NEWSTREAM <sid> <ip-входа>» (см. cmdCaps).
+			if len(fields) != 2 && len(fields) != 3 {
 				continue
 			}
 			sessionID := fields[1]
-			go c.handleNewStream(ctx, sessionID)
+			sourceIP := ""
+			if len(fields) == 3 {
+				sourceIP = fields[2]
+			}
+			go c.handleNewStream(ctx, sessionID, sourceIP)
 		}
 	}
 }
@@ -211,7 +233,7 @@ func (c *ExitClient) serve(ctx context.Context, conn net.Conn) error {
 // затем сшивает его с локальным dial (обычно admission-control прокси на стороне «Выход»,
 // см. docs/TZ_APF_RELAY_v1.0.md §10.2 — relay-путь обязан проходить через тот же лимит
 // подключений, что и прямой).
-func (c *ExitClient) handleNewStream(ctx context.Context, sessionID string) {
+func (c *ExitClient) handleNewStream(ctx context.Context, sessionID, sourceIP string) {
 	relayConn, err := dialRelayTLS(ctx, c.RelayAddr, c.RelayFingerprint, exitClientDialTimeout)
 	if err != nil {
 		c.log("relay: не удалось открыть STREAM-соединение для сессии %s: %v", sessionID, err)
@@ -231,8 +253,16 @@ func (c *ExitClient) handleNewStream(ctx context.Context, sessionID string) {
 	// LocalTarget — loopback до admission-control/sing-box НА ЭТОМ ЖЕ устройстве, не relay:
 	// TLS здесь не нужен (тот же принцип, что и у AdmissionProxy→sing-box, ГЛАВА про
 	// 127.0.0.1-only биндинг, TZ_APF_RELAY_v1.0.md §10.2).
-	dialer := net.Dialer{Timeout: exitClientDialTimeout}
-	localConn, err := dialer.DialContext(ctx, "tcp", c.LocalTarget)
+	var localConn net.Conn
+	if c.DialLocal != nil {
+		// Лимит устройств и звонок во внутреннюю цель — одним шагом (AdmissionProxy.AdmitAndDial):
+		// отказ по лимиту приходит сюда ошибкой и закрывает relay-сторону, как раньше делал
+		// AdmissionProxy закрытием принятого соединения.
+		localConn, err = c.DialLocal(ctx, sourceIP)
+	} else {
+		dialer := net.Dialer{Timeout: exitClientDialTimeout}
+		localConn, err = dialer.DialContext(ctx, "tcp", c.LocalTarget)
+	}
 	if err != nil {
 		c.log("relay: локальная цель %s недоступна для сессии %s: %v", c.LocalTarget, sessionID, err)
 		relayConn.Close()

@@ -27,6 +27,16 @@ const (
 	cmdErr       = "ERR"
 	cmdPing      = "PING"
 	cmdPong      = "PONG"
+
+	// cmdCaps — необязательная строка «Выхода» сразу после принятого EXIT: «CAPS src» значит
+	// «умею принимать адрес источника в NEWSTREAM». [2026-09-29] Через relay все «Входы»
+	// приходили в «Выход» с 127.0.0.1 (ExitClient звонит локально), и лимит устройств (ТЗ §10)
+	// не мог их различить. Теперь relay, которому «Выход» прислал CAPS src, дописывает третье
+	// поле «NEWSTREAM <sid> <ip-входа>». СОВМЕСТИМОСТЬ в обе стороны: старый relay не знает
+	// CAPS и молча игнорирует строку (runExitControl реагирует только на PONG), старый «Выход»
+	// CAPS не шлёт — relay продолжает слать двухполевой NEWSTREAM.
+	cmdCaps = "CAPS"
+	capSrc  = "src"
 )
 
 // streamDialTimeoutNs/streamLateArrivalWindowNs — [найдено go test -race при написании

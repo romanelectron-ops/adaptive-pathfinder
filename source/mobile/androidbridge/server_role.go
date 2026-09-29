@@ -20,8 +20,8 @@ import (
 var errIdentityRequired = errors.New("identity обязателен (см. GenerateServerIdentityJSON)")
 
 // defaultMaxConnectedClientsAndroid — дефолт для телефона (docs/TZ_APF_RELAY_v1.0.md §10.1):
-// «микро-сервер» на батарее и мобильном интернете тянет заметно меньше одновременных «Входов»,
-// чем ПК. Тот же смысл, что defaultMaxConnectedClientsWindows у internal/engine/server_role.go
+// «микро-сервер» на батарее и мобильном интернете тянет заметно меньше одновременных «Входов»
+// (УСТРОЙСТВ, не соединений — см. internal/singbox/admission_proxy.go), чем ПК. Тот же смысл, что defaultMaxConnectedClientsWindows у internal/engine/server_role.go
 // (там 5), просто другое платформенное число.
 const defaultMaxConnectedClientsAndroid = 2
 
@@ -292,7 +292,7 @@ func StartServerRole(listenPort int, realityDest string, identityJSON string, ma
 		serverRoleMu.Unlock()
 
 		reconcileServerRoleExit(listenPort, relayAddr, relayFingerprint)
-		serverRoleLog(fmt.Sprintf("роль «Выход»: конфигурация обновлена без разрыва публичного порта %d (лимит подключений: %d)", listenPort, maxClients))
+		serverRoleLog(fmt.Sprintf("роль «Выход»: конфигурация обновлена без разрыва публичного порта %d (лимит устройств: %d)", listenPort, maxClients))
 		return ""
 	}
 
@@ -333,6 +333,9 @@ func StartServerRole(listenPort int, realityDest string, identityJSON string, ma
 			exitClient := relay.NewExitClient(relayAddr, exitID, relayToken,
 				fmt.Sprintf("127.0.0.1:%d", listenPort), relayFingerprint)
 			exitClient.OnLog = serverRoleLog
+			// Relay-путь идёт через тот же лимит УСТРОЙСТВ, что и прямой, и получает от посредника
+			// адрес настоящего «Входа» (см. internal/engine/server_role.go).
+			exitClient.DialLocal = admissionProxy.AdmitAndDial
 			exitCtx, exitCancel := context.WithCancel(context.Background())
 			serverRoleMu.Lock()
 			serverRoleExit = exitClient
@@ -345,7 +348,7 @@ func StartServerRole(listenPort int, realityDest string, identityJSON string, ma
 		}
 	}
 
-	serverRoleLog(fmt.Sprintf("роль «Выход»: слушаю порт %d (лимит подключений: %d)", listenPort, maxClients))
+	serverRoleLog(fmt.Sprintf("роль «Выход»: слушаю порт %d (лимит устройств: %d)", listenPort, maxClients))
 	return ""
 }
 
@@ -359,6 +362,7 @@ func reconcileServerRoleExit(listenPort int, relayAddr, relayFingerprint string)
 	currentAddr := serverRoleExitAddr
 	currentFingerprint := serverRoleExitFingerprint
 	prevExitCancel := serverRoleExitCancel
+	admission := serverRoleAdmission
 	serverRoleMu.Unlock()
 
 	if relayAddr == currentAddr && relayFingerprint == currentFingerprint {
@@ -390,6 +394,9 @@ func reconcileServerRoleExit(listenPort int, relayAddr, relayFingerprint string)
 	}
 	exitClient := relay.NewExitClient(relayAddr, exitID, relayToken, fmt.Sprintf("127.0.0.1:%d", listenPort), relayFingerprint)
 	exitClient.OnLog = serverRoleLog
+	if admission != nil {
+		exitClient.DialLocal = admission.AdmitAndDial // лимит устройств и адрес «Входа», см. StartServerRole
+	}
 	exitCtx, exitCancel := context.WithCancel(context.Background())
 	serverRoleMu.Lock()
 	serverRoleExit = exitClient
@@ -541,7 +548,8 @@ func GetServerRoleStatusJSON() string {
 		"listen_port": port,
 	}
 	if running && admission != nil {
-		result["connected_clients_count"] = admission.Count()
+		result["connected_clients_count"] = admission.Count() // УСТРОЙСТВА (у кого есть открытое соединение)
+		result["connections_count"] = admission.ConnCount()   // TCP-соединения — для диагностики
 		if ip := admission.LastRemoteIP(); ip != "" {
 			result["last_client_ip"] = ip
 		}
