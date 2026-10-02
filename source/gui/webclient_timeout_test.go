@@ -40,8 +40,8 @@ func TestRequestTimeout_Table(t *testing.T) {
 	if timeoutPoll > 10*time.Second {
 		t.Errorf("timeoutPoll = %v: опрос состояния не должен ждать дольше 10 с", timeoutPoll)
 	}
-	if timeoutRoleRun <= 30*time.Second {
-		t.Errorf("timeoutRoleRun = %v: запуск роли ждёт sing-box до 30 с — запас обязателен", timeoutRoleRun)
+	if timeoutRoleRun <= 120*time.Second {
+		t.Errorf("timeoutRoleRun = %v: запуск роли ждёт sing-box до 120 с (serverRoleReadyTimeout) — запас обязателен", timeoutRoleRun)
 	}
 }
 

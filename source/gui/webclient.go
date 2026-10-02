@@ -65,7 +65,7 @@ const (
 	timeoutPoll    = 5 * time.Second   // GET-опросы состояния
 	timeoutAction  = 30 * time.Second  // обычные POST-действия
 	timeoutNetwork = 60 * time.Second  // проверки, ходящие в интернет
-	timeoutRoleRun = 90 * time.Second  // запуск роли «Выход», подключение партнёра, резервные туннели
+	timeoutRoleRun = 150 * time.Second // запуск роли «Выход» (до 120 с ожидания sing-box + служебные шаги), партнёр, резервные туннели
 	timeoutCatalog = 200 * time.Second // обновление каталога (в режиме владельца — до 3 минут, app.go)
 )
 

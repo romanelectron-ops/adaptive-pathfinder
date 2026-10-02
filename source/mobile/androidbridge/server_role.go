@@ -482,6 +482,11 @@ func IsServerRoleRunning() bool {
 // вернул nil — Kotlin-сторона в итоге перешла на нативный java.net.NetworkInterface вместо
 // этой функции (MainActivity.kt, localIpCandidates), но сама функция остаётся корректной
 // для остальных вызывающих (CLI/тесты), поэтому фикс не убран, просто не критичен для UI.
+//
+// Порядок массива осмысленный (см. singbox.LocalIPCandidates): первым идёт адрес интерфейса
+// маршрута по умолчанию, дальше физические приватные, затем прочие физические, виртуальные
+// адаптеры — в конце; link-local 169.254/16 и 0.0.0.0 в списке нет. Формат элементов
+// ({"ip","interface_name"}) не менялся.
 func GetLocalIPCandidatesJSON() string {
 	candidates := singbox.LocalIPCandidates()
 	if candidates == nil {
@@ -504,14 +509,27 @@ func GetLocalIPCandidatesJSON() string {
 // ограничение, снимаемое только с Kotlin-стороны. STUN (обычный UDP unicast) этому
 // ограничению не подвержен и должен работать независимо.
 //
+// UPnP и STUN идут параллельно, у каждого свой срок (~5с), общий потолок Detect ~8с — он
+// укладывается в 10с ctx ниже и в подпись «до 10с» на Kotlin-стороне (живой инцидент
+// 2026-09-29: раньше они делили один 6-секундный бюджет последовательно, и на медленной
+// раздаче STUN не успевал).
+//
 // Возвращает JSON {"method":int,"explanation":"...","external_host":"...","external_port":int,
 // "has_address":bool} — то же поле "method", что и internal/relay.Method (0=Unknown
-// 1=Direct 2=UPnP 3=ManualPort 4=Relay), или {"error":"..."} при отказе.
+// 1=Direct 2=UPnP 3=ManualPort 4=Relay 5=Undetermined), или {"error":"..."} при отказе.
+// method=5 («не удалось определить внешний адрес») приходит с has_address=false,
+// external_host="" и external_port=0: Kotlin-код, сравнивающий method с 1/2/3, на новое
+// значение не падает — выводит explanation без адреса.
 func DetectReachabilityJSON(port int) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	return detectReachabilityWith(ctx, relay.NewReachability(), port)
+}
 
-	r := relay.NewReachability()
+// detectReachabilityWith — тело DetectReachabilityJSON поверх интерфейса relay.Reachability:
+// тест подставляет заглушку и проверяет JSON-контракт без сети (настоящий Detect бьёт в
+// SSDP/STUN).
+func detectReachabilityWith(ctx context.Context, r relay.Reachability, port int) string {
 	method, err := r.Detect(ctx, port)
 	if err != nil {
 		data, _ := json.Marshal(map[string]string{"error": err.Error()})

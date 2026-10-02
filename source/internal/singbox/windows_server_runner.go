@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"time"
 )
 
 // windowsServerRunner — Э-Выход-1 (docs/PLAN_APF_VHOD_VYHOD_v1.0.md): первая реальная
@@ -36,8 +37,23 @@ const serverRoleConfigName = "server_current.json"
 // binDir/dataDir — те же каталоги, что и у клиентского NewProcess (общий установленный
 // бинарник sing-box), но СВОЙ файл конфигурации: роли обязаны работать одновременно.
 func NewWindowsServerRunner(binDir, dataDir string) ServerRunner {
-	return &windowsServerRunner{proc: NewProcessNamed(binDir, dataDir, serverRoleConfigName)}
+	proc := NewProcessNamed(binDir, dataDir, serverRoleConfigName)
+	proc.readyTimeout = serverRoleReadyTimeout
+	return &windowsServerRunner{proc: proc}
 }
+
+// serverRoleReadyTimeout — сколько ждать открытия порта у sing-box роли «Выход». Больше
+// клиентского ReadyTimeout: запуск роли — редкое ручное действие («Запустить»), человек готов
+// подождать, а обрыв на 30–60 с при загруженном компьютере оставлял его с ошибкой при
+// живом, но ещё не дозагрузившемся процессе. Живой случай 2026-09-29: процессор занят на 100%
+// чужими процессами, порт sing-box открывался от 3 до 48 с, три запуска подряд упирались в
+// прежние 30 с. Мёртвый процесс по-прежнему ловится ранним выходом, не этим сроком.
+var serverRoleReadyTimeout = 120 * time.Second
+
+// SetLogger подключает журнал к выводу sing-box роли «Выход». Раньше у этого процесса OnLog
+// не задавался, и строки «[sing-box] …» (в том числе причина отказа) пропадали бесследно,
+// хотя сообщение об ошибке отсылало именно к ним. Вызывать до Start.
+func (r *windowsServerRunner) SetLogger(fn func(string)) { r.proc.OnLog = fn }
 
 func (r *windowsServerRunner) IsInstalled() bool        { return r.proc.IsInstalled() }
 func (r *windowsServerRunner) Version() (string, error) { return r.proc.Version() }
@@ -152,7 +168,14 @@ func (r *windowsServerRunner) Start(ctx context.Context) error {
 		// движка, если понадобится более явная диагностика этого конкретного отказа.
 		_ = err
 	}
-	return r.proc.Start(ctx)
+	if err := r.proc.Start(ctx); err != nil {
+		// Правило заведено выше под ЭТУ попытку; при отказе Stop() вызван не будет (роль не
+		// запущена), и каждая неудачная попытка оставляла в брандмауэре лишнее разрешение на
+		// новый порт (в проверке 2026-09-29 накопились правила на 54769, 55172, …).
+		RemoveInboundFirewallRule(serverRoleFirewallRuleName)
+		return err
+	}
+	return nil
 }
 func (r *windowsServerRunner) Stop() error {
 	RemoveInboundFirewallRule(serverRoleFirewallRuleName)

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -48,6 +49,11 @@ type Process struct {
 	running    bool
 	logCh      chan string
 	OnLog      func(string)
+
+	// readyTimeout — свой срок ожидания открытия порта для ЭТОГО процесса; 0 — общий
+	// ReadyTimeout. Нужен роли «Выход» (windows_server_runner.go): у неё запуск законно
+	// медленнее клиентского, см. serverRoleReadyTimeout.
+	readyTimeout time.Duration
 
 	// readyPort — локальный порт, по открытию которого судим о готовности (дефект D-A31).
 	// Заполняется в WriteConfig из самой конфигурации; 0 означает «признака готовности нет»
@@ -404,7 +410,11 @@ func (p *Process) awaitReady(ctx context.Context) error {
 		return nil
 	}
 
-	deadline := timeNowFn().Add(ReadyTimeout)
+	limit := p.readyTimeout
+	if limit <= 0 {
+		limit = ReadyTimeout
+	}
+	deadline := timeNowFn().Add(limit)
 	for {
 		select {
 		case <-p.exitCh:
@@ -425,7 +435,8 @@ func (p *Process) awaitReady(ctx context.Context) error {
 		if timeNowFn().After(deadline) {
 			p.killLocked()
 			return readyTimeoutError(fmt.Errorf("sing-box не открыл локальный порт %d за %s: процесс запущен, "+
-				"но входящих соединений не принимает", p.readyPort, ReadyTimeout))
+				"но входящих соединений не принимает (компьютер сильно загружен или антивирус "+
+				"проверяет sing-box.exe — подождите и повторите)", p.readyPort, limit))
 		}
 		startSleepFn(readyPollInterval)
 	}
@@ -436,9 +447,15 @@ func (p *Process) awaitReady(ctx context.Context) error {
 func (p *Process) earlyExitLocked() error {
 	p.running = false
 	p.cmd = nil
-	base := errors.New("sing-box завершился сразу после запуска — причина в строках " +
-		"[sing-box] выше по журналу (обычно отвергнутая конфигурация)")
-	if errors.Is(classifyEarlyExit(p.outTailSnapshot()), ErrLocalStart) {
+	// Причину кладём в САМО сообщение: у процесса роли «Выход» вывод раньше не попадал в
+	// журнал вовсе (OnLog не был подключён), и отсылка «см. строки [sing-box] выше» вела в
+	// пустоту — живой случай 2026-09-29 (владелец видел ошибку без единой подсказки).
+	tail := p.outTailSnapshot()
+	base := errors.New("sing-box завершился сразу после запуска (обычно отвергнутая конфигурация)")
+	if last := lastOutputLine(tail); last != "" {
+		base = fmt.Errorf("sing-box завершился сразу после запуска: %s", last)
+	}
+	if errors.Is(classifyEarlyExit(tail), ErrLocalStart) {
 		return localStartError(base)
 	}
 	return configRejectedError(base)
@@ -647,6 +664,27 @@ var (
 	}
 )
 
+// lastOutputLine — последняя непустая строка вывода sing-box без цветовых ANSI-кодов
+// (sing-box красит уровни: «\x1b[31mFATAL\x1b[0m»), обрезанная до разумной длины — для
+// текста ошибки, который увидит человек.
+func lastOutputLine(lines []string) string {
+	for i := len(lines) - 1; i >= 0; i-- {
+		s := ansiSequence.ReplaceAllString(lines[i], "")
+		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "[sing-box]"))
+		if s == "" {
+			continue
+		}
+		if r := []rune(s); len(r) > 300 {
+			s = string(r[:300]) + "…"
+		}
+		return s
+	}
+	return ""
+}
+
+// ansiSequence — цветовые/управляющие последовательности терминала.
+var ansiSequence = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
 // ReadyTimeout — сколько ждать, пока sing-box откроет свой порт (дефект D-A31).
 //
 // На устройстве от «sing-box started» до «tcp server started» проходит порядка 10 мс, а живой
@@ -657,7 +695,13 @@ var (
 // удачный старт открыл порт через 8.76 с после PID, а все провалы обрезались ровно на 10.1 с —
 // то есть срок резал живые, но медленные запуски. Цены у запаса нет: здоровый старт выходит
 // на первой пробе, мёртвый процесс ловится ранним выходом, отмена — контекстом.
-var ReadyTimeout = 30 * time.Second
+//
+// 60 с, а не 30 (2026-09-29): на том же ПК при загрузке процессора 100% чужими процессами
+// (другие сессии, тесты, сканирование диска) даже пустой `sing-box.exe version` то запускался
+// за 1.4 с, то за 22 с, а старт с портом занимал от 3 до 48 с — 30 с обрезали живые запуски
+// (роль «Выход» не поднималась, три попытки подряд). У роли «Выход» срок ещё больше:
+// serverRoleReadyTimeout.
+var ReadyTimeout = 60 * time.Second
 
 const (
 	readyPollInterval = 150 * time.Millisecond

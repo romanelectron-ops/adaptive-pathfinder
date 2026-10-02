@@ -845,7 +845,10 @@ object ApfCore {
 
     /**
      * JSON {"method":int,"explanation":"...","external_host":"...","external_port":int,"has_address":bool}
-     * или {"error":"..."}. UPnP-часть требует активного WifiManager.MulticastLock со стороны
+     * или {"error":"..."}. method — internal/relay.Method: 0=Unknown 1=Direct 2=UPnP 3=ManualPort
+     * (STUN дал публичный адрес, порт не проброшен) 4=Relay (STUN-адрес приватный/CGNAT) 5=Undetermined
+     * («не удалось определить», has_address=false — не ошибка, а информационный исход; вызывающий
+     * решает, подставлять ли external_host в «Host», через linkHostWarning). UPnP-часть требует активного WifiManager.MulticastLock со стороны
      * вызывающего (см. MainActivity.kt, doDetectReachability) — иначе Android может глушить
      * входящий SSDP-мультикаст на радио и UPnP ничего не найдёт даже при рабочем роутере.
      */

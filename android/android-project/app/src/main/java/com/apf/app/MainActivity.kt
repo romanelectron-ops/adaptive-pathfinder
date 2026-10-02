@@ -4220,24 +4220,48 @@ class MainActivity : AppCompatActivity() {
     // "null") — вероятно, песочница Android-приложения (untrusted_app SELinux-контекст)
     // не даёт Go-рантайму то же, что даёт обычному процессу на Windows/Linux. Обходной путь —
     // штатный Android/Java API, которым приложения пользуются без специальных прав.
+    //
+    // Живой инцидент 2026-09-29 (тот же, что у Go-стороны — singbox.LocalIPCandidates): первым в
+    // поле «Host» попадал не адрес, по которому телефон реально виден в сети, а адрес служебного
+    // интерфейса. Поэтому пропускаем то, что физически не может быть адресом «Выхода» для
+    // партнёра: tun* (в том числе собственный TUN APF, 172.19.0.1 — он приватный, и без фильтра
+    // шёл бы наравне с настоящим Wi-Fi-адресом), dummy*, ppp*, lo и link-local 169.254/16
+    // (APIPA — «адреса нет вообще»). Порядок: wlan*/eth* с частным адресом → прочие частные →
+    // остальные (публичные и CGNAT — CGNAT isPrivateIPv4 нарочно не считает частным).
     private fun localIpCandidates(): List<Pair<String, String>> {
-        val private = mutableListOf<Pair<String, String>>()
+        val primary = mutableListOf<Pair<String, String>>()
+        val privateOther = mutableListOf<Pair<String, String>>()
         val other = mutableListOf<Pair<String, String>>()
-        val ifaces = java.net.NetworkInterface.getNetworkInterfaces()
+        // Тот же адрес, что APFVpnService.Builder.addAddress: имя интерфейса у VPN-сервиса
+        // на части прошивок отличается от «tun0», но адрес фиксирован.
+        val apfTunAddress = "172.19.0.1"
+        val ifaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return emptyList()
         while (ifaces.hasMoreElements()) {
             val iface = ifaces.nextElement()
             if (!iface.isUp || iface.isLoopback) continue
+            val name = iface.name.lowercase()
+            if (name == "lo" || name.startsWith("tun") || name.startsWith("dummy") || name.startsWith("ppp")) continue
             val addrs = iface.inetAddresses
             while (addrs.hasMoreElements()) {
                 val addr = addrs.nextElement()
                 if (addr !is java.net.Inet4Address) continue
                 val ip = addr.hostAddress ?: continue
+                if (addr.isLinkLocalAddress || ip == apfTunAddress) continue
                 val entry = ip to iface.displayName
-                if (isPrivateIPv4(ip)) private.add(entry) else other.add(entry)
+                when {
+                    !isPrivateIPv4(ip) -> other.add(entry)
+                    name.startsWith("wlan") || name.startsWith("eth") -> primary.add(entry)
+                    else -> privateOther.add(entry)
+                }
             }
         }
-        return private + other
+        return primary + privateOther + other
     }
+
+    /** Предупреждение о хосте ссылки от Go-моста; пусто, если хост нормален для внешней сети или
+     * вызов моста не удался — это подсказка, а не условие работы (как и при сборке ссылки). */
+    private fun linkHostWarningOrEmpty(host: String): String =
+        try { ApfCore.linkHostWarning(host) } catch (e: Exception) { "" }
 
     private fun isPrivateIPv4(ip: String): Boolean {
         val parts = ip.split(".").mapNotNull { it.toIntOrNull() }
@@ -4543,6 +4567,83 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e("APFVpnService", "localIpCandidates провалился", e)
         }
+        // Поле ссылки, её предупреждение и сборка ссылки объявлены ЗДЕСЬ, до кнопки «Определить адрес
+        // автоматически» (в контейнер добавляются ниже, в прежнем порядке): подстановка найденного адреса
+        // в «Host» должна тут же пересобрать уже показанную ссылку, как это делает окно ПК
+        // (doGenerateServerLink(true)) — иначе владелец скопирует ссылку со старым хостом и решит, что
+        // «IP не меняется» (ревью 2026-09-30).
+        val etLink = EditText(this).apply {
+            hint = "Ссылка появится здесь"
+            isFocusable = true
+            setTextIsSelectable(true)
+        }
+        // Живой инцидент 2026-09-29: ссылка на приватный адрес (10.x.x.x, 192.168.x.x) собирается
+        // «успешно», но «Вход» из ДРУГОЙ сети до неё не достучится (dial tcp ...: i/o timeout) —
+        // причину нигде не объясняли. Текст даёт ApfCore.linkHostWarning; цвет — тот же
+        // оранжевый предупреждения, что у плашки про надёжность роли в начале этого диалога.
+        // Скрыт, пока нечего сказать (нет ссылки или адрес публичный).
+        val tvLinkWarning = TextView(this).apply {
+            setTextColor(getColor(android.R.color.holo_orange_light))
+            textSize = 12f
+            setPadding(0, 0, 0, 8)
+            visibility = View.GONE
+        }
+        /** Сборка ссылки из полей диалога. silent=true — пересборка после автоопределения адреса:
+         * без тостов и диалога ошибки, при нехватке данных молча выходим (ссылка остаётся прежней). */
+        fun buildServerLinkFromFields(silent: Boolean) {
+            if (serverRoleIdentityJson.isEmpty()) {
+                if (!silent) toast(getString(R.string.t_identity_first))
+                return
+            }
+            val relayAddr = etRelayAddr.text.toString().trim()
+            val relayFingerprint = etRelayFingerprint.text.toString().trim()
+            val host = etHost.text.toString().trim()
+            // При relay host в ссылку не идёт (BuildServerLinkJSON игнорирует его в этом
+            // случае, докс §3) — не требуем ввода того, что всё равно отбросится.
+            if (host.isEmpty() && relayAddr.isEmpty()) {
+                if (!silent) toast(getString(R.string.t_need_host))
+                return
+            }
+            if (relayAddr.isNotEmpty() && relayFingerprint.isEmpty()) {
+                if (!silent) showErrorMessage(getString(R.string.t_relay_need_fingerprint))
+                return
+            }
+            val port = etPort.text.toString().toIntOrNull() ?: 0
+            val result = try {
+                JSONObject(ApfCore.buildServerLinkJson(
+                    serverRoleIdentityJson, host, port, etRealityDest.text.toString().trim(), "APF", relayAddr, relayFingerprint
+                ))
+            } catch (e: Exception) {
+                null
+            }
+            val link = result?.optString("link").orEmpty()
+            if (link.isEmpty()) {
+                if (!silent) {
+                    val reason = result?.optString("error").orEmpty()
+                    showErrorMessage(
+                        getString(
+                            R.string.e_build_link,
+                            if (reason.isEmpty()) "причина не сообщена" else bridgeErrorText(reason)
+                        )
+                    )
+                }
+            } else {
+                etLink.setText(link)
+                // Предупреждение только для прямой ссылки: при заданном relay ссылка адресует
+                // посредника, а не host (см. комментарий выше), и топология сети этого
+                // телефона партнёра не касается. Сбой вызова моста не должен скрывать уже
+                // собранную ссылку — это подсказка, а не условие работы.
+                val warning = if (relayAddr.isEmpty()) {
+                    try { ApfCore.linkHostWarning(host) } catch (e: Exception) { "" }
+                } else ""
+                if (warning.isEmpty()) {
+                    tvLinkWarning.visibility = View.GONE
+                } else {
+                    tvLinkWarning.text = "⚠ Адрес «$host»: $warning"
+                    tvLinkWarning.visibility = View.VISIBLE
+                }
+            }
+        }
         val tvReachabilityResult = TextView(this).apply {
             textSize = 12f
             setPadding(0, 0, 0, 8)
@@ -4571,16 +4672,91 @@ class MainActivity : AppCompatActivity() {
                                 tvReachabilityResult.text = "✗ Не удалось определить: ${r.getString("error")}"
                                 return@runOnUiThread
                             }
+                            // method — internal/relay.Method: 0=Unknown 1=Direct 2=UPnP 3=ManualPort
+                            // 4=Relay 5=Undetermined («не удалось определить», has_address=false).
                             val method = r.optInt("method", 0)
-                            val isGood = method == 1 || method == 2 // Direct или UPnP — порт подтверждён
+                            // Direct или UPnP — порт подтверждён; метод 5 — не «isGood» и не ошибка.
+                            val isGood = method == 1 || method == 2
                             var text = (if (isGood) "✓ " else "ℹ ") + r.optString("explanation")
-                            if (r.optBoolean("has_address")) {
-                                val extHost = r.optString("external_host")
-                                text += " — внешний адрес: $extHost:${r.optInt("external_port")}"
-                                if (isGood || etHost.text.isBlank()) etHost.setText(extHost)
+                            // Живой инцидент 2026-09-29 («IP не меняется», сначала на ПК): адрес
+                            // подставлялся в «Host» только при Direct/UPnP или пустом поле, а поле уже
+                            // заполнено локальным адресом при открытии диалога — STUN-результат его
+                            // не заменял и в тексте не был виден. Теперь поле с заведомо бесполезным
+                            // для другой сети значением (linkHostWarning непуст: LAN/loopback/CGNAT/
+                            // 0.0.0.0) заменяется найденным ПУБЛИЧНЫМ адресом; нормальное значение
+                            // пользователя (публичный IP/домен) не затираем; приватный/CGNAT-адрес
+                            // (method 4) не подставляем никогда. Правило единое для Direct/UPnP/STUN
+                            // (ревью 2026-09-30: раньше Direct/UPnP подставлялись безусловно — приватный
+                            // адрес роутера при двойном NAT выдавался за «всё готово», а ручной домен
+                            // затирался IP-адресом), как в окне ПК (doDetectReachability).
+                            val hasAddress = r.optBoolean("has_address")
+                            val extHost = r.optString("external_host")
+                            val extPort = r.optInt("external_port")
+                            val curHost = etHost.text.toString().trim()
+                            var filled = false
+                            var foundPublic = false
+                            if (hasAddress) {
+                                foundPublic = method != 4 && linkHostWarningOrEmpty(extHost).isEmpty()
+                                val curUseless = curHost.isEmpty() || linkHostWarningOrEmpty(curHost).isNotEmpty()
+                                filled = foundPublic && curUseless
+                                val was = if (curHost.isNotEmpty()) ", было «$curHost»" else ""
+                                text += when {
+                                    // Причин недостижимости несколько (внутренний адрес, тест-диапазон
+                                    // 198.18/15, операторский CGNAT) — называем нейтрально.
+                                    !foundPublic ->
+                                        " — найденный адрес $extHost недостижим снаружи (внутренний, " +
+                                            "тестовый или операторский), поэтому в «Host» не подставлен"
+                                    filled && isGood ->
+                                        " — внешний адрес: $extHost:$extPort (подставлен в «Host»$was)"
+                                    filled ->
+                                        " — подставлен вероятный внешний адрес $extHost" +
+                                            (if (curHost.isNotEmpty()) " (было «$curHost»)" else "") +
+                                            " — ссылка заработает у партнёра после проброса порта $extPort или через relay"
+                                    else ->
+                                        " — внешний адрес: $extHost:$extPort (в «Host» не подставлен: " +
+                                            "там уже введено «$curHost»)"
+                                }
                             }
-                            if (method == 3) {
-                                text += ". Порт $port нужно пробросить на роутере вручную на этот же порт локально."
+                            // Пояснение отдельным предложением: Explain(...) у Go иногда уже кончается
+                            // точкой — без этой склейки получалось «..».
+                            fun addSentence(s: String) {
+                                text = text.trimEnd('.', ' ', '\n') + ". " + s
+                            }
+                            // Адрес есть, но он не публичный (у Go это method 4) — пробросом порта не
+                            // лечится, только relay.
+                            val relayOnly = method == 4 || (method == 3 && hasAddress && !foundPublic)
+                            if (relayOnly) {
+                                addSentence("Прямое подключение снаружи невозможно — используйте " +
+                                    "relay-посредник (поля «Адрес relay-сервера» и его отпечаток выше).")
+                            } else if (method == 3) {
+                                // Тот же инцидент: устройство в раздаче с другого телефона (или на
+                                // мобильном интернете) — «пробросьте порт на роутере» невыполнимо,
+                                // настраиваемого роутера нет.
+                                addSentence("Порт $port нужно пробросить на роутере вручную на этот же порт " +
+                                    "локально. Если этот телефон сидит в раздаче с другого телефона " +
+                                    "или на мобильном интернете — проброс невозможен, нужен relay " +
+                                    "(поля «Адрес relay-сервера» и его отпечаток выше).")
+                            } else if (method == 5) {
+                                addSentence("Адрес в «Host» оставлен как есть — введите публичный адрес " +
+                                    "или домен вручную либо задайте relay (поля выше).")
+                            }
+                            if (filled) {
+                                etHost.setText(extHost)
+                                // Ссылка, уже показанная ниже, собрана со СТАРЫМ хостом (и старым
+                                // предупреждением) — без пересборки владелец скопировал бы прежний адрес
+                                // и снова решил, что «IP не меняется» (то же делает окно ПК:
+                                // doGenerateServerLink(true)).
+                                if (etLink.text.isNotBlank()) {
+                                    buildServerLinkFromFields(true)
+                                    if (!isGood) {
+                                        // Подставленный STUN-адрес НЕ подтверждён (порт не проброшен):
+                                        // рядом со ссылкой честная пометка вместо молчания.
+                                        tvLinkWarning.text = "ℹ В ссылке — вероятный внешний адрес $extHost, порт на нём " +
+                                            "ещё не проброшен: у партнёра из другой сети ссылка заработает " +
+                                            "после проброса порта или через relay."
+                                        tvLinkWarning.visibility = View.VISIBLE
+                                    }
+                                }
                             }
                             tvReachabilityResult.text = text
                         } catch (e: Exception) {
@@ -4627,78 +4803,13 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         })
-        val etLink = EditText(this).apply {
-            hint = "Ссылка появится здесь"
-            isFocusable = true
-            setTextIsSelectable(true)
-        }
+        // etLink/tvLinkWarning и buildServerLinkFromFields объявлены выше (до кнопки автоопределения:
+        // она пересобирает показанную ссылку после подстановки найденного адреса).
         container.addView(etLink)
-        // Живой инцидент 2026-09-29: ссылка на приватный адрес (10.x.x.x, 192.168.x.x) собирается
-        // «успешно», но «Вход» из ДРУГОЙ сети до неё не достучится (dial tcp ...: i/o timeout) —
-        // причину нигде не объясняли. Текст даёт ApfCore.linkHostWarning; цвет — тот же
-        // оранжевый предупреждения, что у плашки про надёжность роли в начале этого диалога.
-        // Скрыт, пока нечего сказать (нет ссылки или адрес публичный).
-        val tvLinkWarning = TextView(this).apply {
-            setTextColor(getColor(android.R.color.holo_orange_light))
-            textSize = 12f
-            setPadding(0, 0, 0, 8)
-            visibility = View.GONE
-        }
         container.addView(tvLinkWarning)
         container.addView(Button(this).apply {
             text = "Собрать ссылку"
-            setOnClickListener {
-                if (serverRoleIdentityJson.isEmpty()) {
-                    toast(getString(R.string.t_identity_first))
-                    return@setOnClickListener
-                }
-                val relayAddr = etRelayAddr.text.toString().trim()
-                val relayFingerprint = etRelayFingerprint.text.toString().trim()
-                val host = etHost.text.toString().trim()
-                // При relay host в ссылку не идёт (BuildServerLinkJSON игнорирует его в этом
-                // случае, докс §3) — не требуем ввода того, что всё равно отбросится.
-                if (host.isEmpty() && relayAddr.isEmpty()) {
-                    toast(getString(R.string.t_need_host))
-                    return@setOnClickListener
-                }
-                if (relayAddr.isNotEmpty() && relayFingerprint.isEmpty()) {
-                    showErrorMessage(getString(R.string.t_relay_need_fingerprint))
-                    return@setOnClickListener
-                }
-                val port = etPort.text.toString().toIntOrNull() ?: 0
-                val result = try {
-                    JSONObject(ApfCore.buildServerLinkJson(
-                        serverRoleIdentityJson, host, port, etRealityDest.text.toString().trim(), "APF", relayAddr, relayFingerprint
-                    ))
-                } catch (e: Exception) {
-                    null
-                }
-                val link = result?.optString("link").orEmpty()
-                if (link.isEmpty()) {
-                    val reason = result?.optString("error").orEmpty()
-                    showErrorMessage(
-                        getString(
-                            R.string.e_build_link,
-                            if (reason.isEmpty()) "причина не сообщена" else bridgeErrorText(reason)
-                        )
-                    )
-                } else {
-                    etLink.setText(link)
-                    // Предупреждение только для прямой ссылки: при заданном relay ссылка адресует
-                    // посредника, а не host (см. комментарий выше), и топология сети этого
-                    // телефона партнёра не касается. Сбой вызова моста не должен скрывать уже
-                    // собранную ссылку — это подсказка, а не условие работы.
-                    val warning = if (relayAddr.isEmpty()) {
-                        try { ApfCore.linkHostWarning(host) } catch (e: Exception) { "" }
-                    } else ""
-                    if (warning.isEmpty()) {
-                        tvLinkWarning.visibility = View.GONE
-                    } else {
-                        tvLinkWarning.text = "⚠ Адрес «$host»: $warning"
-                        tvLinkWarning.visibility = View.VISIBLE
-                    }
-                }
-            }
+            setOnClickListener { buildServerLinkFromFields(false) }
         })
 
         AlertDialog.Builder(this)

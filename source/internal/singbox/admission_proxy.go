@@ -24,7 +24,11 @@
 //     от исчерпания дескрипторов, а не лимит «сколько можно пользоваться»);
 //   - место устройства держится, пока у него есть соединения, и ещё deviceIdleGrace после
 //     последнего — иначе между двумя страницами (ноль соединений на секунду) его место мог
-//     бы занять чужой «Вход»;
+//     бы занять чужой «Вход». Но если лимит УЖЕ достигнут, а новый источник просится,
+//     самое давнее место без соединений, простаивающее не меньше evictIdleAfter, уступается
+//     ему (ревью 1.1.10, F5): роуминг Wi-Fi↔LTE и двойной стек оставляют за одним «Входом» два
+//     места (старый адрес + новый), и без вытеснения он запирал бы сам себя или второе
+//     устройство почти на 4.5 минуты (отсрочка 2 мин + TCP keepalive);
 //   - по прямому подключению адрес источника — настоящий адрес того, кто постучался. Через
 //     relay его сообщает сам посредник (AdmitAndDial), см. internal/relay. Честная граница:
 //     два устройства за ОДНИМ NAT (общий Wi-Fi роутера, одна раздача) с точки зрения «Выхода»
@@ -37,6 +41,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,8 +60,30 @@ const driftWarnThreshold = 1
 
 const (
 	// deviceIdleGrace — сколько место устройства держится после закрытия его последнего
-	// соединения (см. комментарий пакета).
+	// соединения (см. комментарий пакета). Действует, пока лимит НЕ достигнут: тогда вернувшееся
+	// с тем же адресом устройство находит своё место на месте. При достигнутом лимите его
+	// раньше вытесняет новый источник — см. evictIdleAfter.
 	deviceIdleGrace = 2 * time.Minute
+
+	// evictIdleAfter — сколько место без соединений должно простоять, чтобы при достигнутом
+	// лимите его можно было отдать новому источнику (самое давнее первым). Короче
+	// deviceIdleGrace: 30 с перекрывают паузу между двумя страницами (единицы секунд), но не
+	// заставляют роуминговый «Вход» ждать 2 минуты, пока его прежний адрес отпустит слот.
+	evictIdleAfter = 30 * time.Second
+
+	// keepAliveIdle/Interval/Count — TCP keepalive принятых прямых соединений: мёртвый пир
+	// (телефон ушёл из зоны, сменил сеть без FIN) обнаруживается за ~Idle+Count*Interval = 60 с,
+	// а не за ~150 с дефолта Go (15+9×15) — иначе его соединения (а с ними и место устройства)
+	// висят вдвое дольше. Только SetKeepAlivePeriod(30с) здесь не годится: он задаёт и Idle, и
+	// Interval, а Count остаётся ОС-овым (9 на Linux/Android) — вышло бы 300 с, хуже дефолта.
+	keepAliveIdle     = 30 * time.Second
+	keepAliveInterval = 10 * time.Second
+	keepAliveCount    = 3
+
+	// acceptRetryMin/Max — пауза цикла Serve после ошибки Accept (удваивается, как в
+	// net/http.Server): не молотить по кругу при исчерпании дескрипторов, но и не ждать долго.
+	acceptRetryMin = 5 * time.Millisecond
+	acceptRetryMax = time.Second
 
 	// maxConnsPerDevice — потолок одновременных соединений ОДНОГО допущенного устройства.
 	// Это не «лимит пользования»: браузер + приложения держат десятки соединений, сотни —
@@ -83,6 +110,36 @@ var (
 	// errDeviceConnCap — у допущенного устройства слишком много одновременных соединений.
 	errDeviceConnCap = errors.New("слишком много соединений от одного устройства")
 )
+
+// IsAdmissionRejection — true, если err — штатный отказ лимита устройств (errDeviceLimit или
+// errDeviceConnCap, в т.ч. обёрнутый через fmt.Errorf("%w")). Такие отказы AdmissionProxy сам
+// пишет в журнал не чаще раза в минуту на устройство; вызывающий (relay.ExitClient) не должен
+// дублировать их своей строкой на каждое соединение (ревью 1.1.10, F4) и не должен выдавать их
+// за сбой соединения с внутренней целью.
+func IsAdmissionRejection(err error) bool {
+	return errors.Is(err, errDeviceLimit) || errors.Is(err, errDeviceConnCap)
+}
+
+// enableKeepAlive включает на принятом прямом соединении TCP keepalive с укороченным сроком
+// обнаружения мёртвого пира (см. keepAliveIdle). Возвращает false для не-TCP соединений (обёртки,
+// net.Pipe) и при отказе ОС — тогда остаётся дефолт listener'а, это не ошибка.
+func enableKeepAlive(conn net.Conn) bool {
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return false
+	}
+	err := tc.SetKeepAliveConfig(net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     keepAliveIdle,
+		Interval: keepAliveInterval,
+		Count:    keepAliveCount,
+	})
+	return err == nil
+}
+
+// keepAliveFn — шов для теста проводки: убрать вызов из handleConn нельзя незаметно (ревью
+// 2026-09-30: тест раньше проверял только саму enableKeepAlive, а не то, что её зовут).
+var keepAliveFn = enableKeepAlive
 
 // deviceSlot — учёт одного устройства.
 type deviceSlot struct {
@@ -211,11 +268,40 @@ func (p *AdmissionProxy) Serve(ctx context.Context) {
 		<-ctx.Done()
 		p.publicLn.Close()
 	}()
+	// [ревью 1.1.10, F3] Цикл раньше завершался на ПЕРВОЙ же ошибке Accept — а роль при этом
+	// продолжала показывать «запущена»: порт не принимает соединения, статус зелёный. Ошибка
+	// Accept бывает и временной (исчерпание дескрипторов EMFILE, сброс не до конца принятого
+	// соединения), поэтому — как в net/http.Server: пауза с экспоненциальным ростом 5 мс → 1 с
+	// и следующая попытка. Выход — только когда listener закрыт или ctx отменён.
+	var delay time.Duration
+	var lastLogAt time.Time
 	for {
 		conn, err := p.publicLn.Accept()
 		if err != nil {
-			return
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
+			}
+			if delay == 0 {
+				delay = acceptRetryMin
+			} else if delay *= 2; delay > acceptRetryMax {
+				delay = acceptRetryMax
+			}
+			// Журнал — не чаще раза в rejectLogEvery: постоянная ошибка при паузе 1 с иначе
+			// писала бы строку в секунду (тот же урок, что и с отказами по лимиту).
+			if now := p.clock(); lastLogAt.IsZero() || now.Sub(lastLogAt) >= rejectLogEvery {
+				lastLogAt = now
+				p.log("AdmissionProxy: ошибка Accept: %v — повтор через %v", err, delay)
+			}
+			t := time.NewTimer(delay)
+			select {
+			case <-t.C:
+			case <-ctx.Done():
+				t.Stop()
+				return
+			}
+			continue
 		}
+		delay = 0
 		go p.handleConn(conn)
 	}
 }
@@ -265,6 +351,31 @@ func (p *AdmissionProxy) pruneIdleLocked(now time.Time) {
 	}
 }
 
+// evictIdleForLocked освобождает need мест, вытесняя самые давние устройства без соединений,
+// простоявшие не меньше evictIdleAfter. Всё или ничего: если подходящих меньше need (типичный
+// случай после уменьшения лимита — устройств больше, чем мест), не вытесняет никого и
+// возвращает false — лишний отказ новому источнику не должен стоить чужих мест. devMu удержан.
+func (p *AdmissionProxy) evictIdleForLocked(now time.Time, need int) bool {
+	type idle struct {
+		key  string
+		seen time.Time
+	}
+	var cands []idle
+	for k, s := range p.devices {
+		if s.active == 0 && now.Sub(s.lastSeen) >= evictIdleAfter {
+			cands = append(cands, idle{k, s.lastSeen})
+		}
+	}
+	if len(cands) < need {
+		return false
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].seen.Before(cands[j].seen) })
+	for _, c := range cands[:need] {
+		delete(p.devices, c.key)
+	}
+	return true
+}
+
 // admit занимает место под ещё одно соединение устройства key. При успехе возвращает release —
 // его обязан вызвать (ровно один раз) тот, кто закрывает соединение; повторный вызов безопасен.
 func (p *AdmissionProxy) admit(key string) (release func(), err error) {
@@ -275,8 +386,13 @@ func (p *AdmissionProxy) admit(key string) (release func(), err error) {
 	slot := p.devices[key]
 	if slot == nil {
 		if max := p.maxClients.Load(); max > 0 && int64(len(p.devices)) >= max {
-			p.devMu.Unlock()
-			return nil, errDeviceLimit
+			// Лимит достигнут: новый источник может занять место, которое давно простаивает
+			// (роуминг/двойной стек — см. комментарий пакета). Активное устройство не трогаем.
+			need := len(p.devices) - int(max) + 1 // >1 только после уменьшения лимита на лету
+			if !p.evictIdleForLocked(now, need) {
+				p.devMu.Unlock()
+				return nil, errDeviceLimit
+			}
 		}
 		slot = &deviceSlot{}
 		p.devices[key] = slot
@@ -313,15 +429,24 @@ func (p *AdmissionProxy) logReject(key, host string, err error) {
 		p.lastRejectLog = make(map[string]time.Time)
 	}
 	p.lastRejectLog[key] = now
-	devices := len(p.devices)
+	devices, held := len(p.devices), 0
+	for _, s := range p.devices {
+		if s.active == 0 {
+			held++
+		}
+	}
 	p.devMu.Unlock()
 
 	if errors.Is(err, errDeviceConnCap) {
 		p.log("Устройство %s открыло слишком много соединений (%d) — новое отклонено", host, maxConnsPerDevice)
 		return
 	}
-	p.log("Лимит устройств (%d) исчерпан — новое устройство %s не пущено (подключено: %d)",
-		p.maxClients.Load(), host, devices)
+	// [ревью 1.1.10, F5-ux] Раньше писали «подключено: N», считая и места, которые лишь
+	// держатся после отключения (deviceIdleGrace), — а счётчик в интерфейсе (Count) их не
+	// считает, и журнал с экраном расходились. Теперь оба числа названы честно.
+	p.log("Лимит устройств (%d) исчерпан — новое устройство %s не пущено: "+
+		"занято слотов: %d (из них удерживаются после отключения: %d)",
+		p.maxClients.Load(), host, devices, held)
 }
 
 func (p *AdmissionProxy) handleConn(conn net.Conn) {
@@ -338,6 +463,8 @@ func (p *AdmissionProxy) handleConn(conn net.Conn) {
 	}
 	defer release()
 	p.setLastRemote(host)
+	// Только после допуска: отклонённое соединение закрывается сразу, keepalive ему ни к чему.
+	keepAliveFn(conn)
 
 	internalTarget, _ := p.target()
 	target, err := net.DialTimeout("tcp", internalTarget, 5*time.Second)

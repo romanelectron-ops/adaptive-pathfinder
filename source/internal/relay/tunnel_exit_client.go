@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/apf/adaptive-pathfinder/internal/singbox"
 )
 
 const (
@@ -264,7 +266,19 @@ func (c *ExitClient) handleNewStream(ctx context.Context, sessionID, sourceIP st
 		localConn, err = dialer.DialContext(ctx, "tcp", c.LocalTarget)
 	}
 	if err != nil {
-		c.log("relay: локальная цель %s недоступна для сессии %s: %v", c.LocalTarget, sessionID, err)
+		switch {
+		case c.DialLocal != nil && singbox.IsAdmissionRejection(err):
+			// [ревью 1.1.10, C3/F4] Отказ по лимиту устройств — штатная работа лимита, а не сбой
+			// «локальной цели»: AdmissionProxy уже записал его в журнал (не чаще раза в минуту на
+			// устройство). Раньше здесь шла ещё одна строка на КАЖДЫЙ отказ, да ещё с текстом
+			// «цель недоступна» — она и забивала журнал, и путала диагноз (цель-то в порядке).
+		case c.DialLocal != nil:
+			// LocalTarget при DialLocal — не то, куда реально звонили (адрес выбирает сам
+			// DialLocal), поэтому его в тексте нет: причина — в err.
+			c.log("relay: не удалось соединиться с внутренней целью роли «Выход» для сессии %s: %v", sessionID, err)
+		default:
+			c.log("relay: локальная цель %s недоступна для сессии %s: %v", c.LocalTarget, sessionID, err)
+		}
 		relayConn.Close()
 		return
 	}

@@ -6,7 +6,7 @@
 package version
 
 // Version — текущая версия приложения (semver без префикса "v").
-var Version = "1.1.10"
+var Version = "1.1.11"
 
 // Label возвращает версию с префиксом "v" для отображения в UI.
 func Label() string { return "v" + Version }

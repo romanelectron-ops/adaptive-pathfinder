@@ -36,6 +36,41 @@ func TestLinkHostWarning(t *testing.T) {
 		// unspecified
 		{"unspecified v4", "0.0.0.0", "любой интерфейс"},
 		{"unspecified v6", "::", "любой интерфейс"},
+		{"unspecified v6 bracketed", "[::]", "любой интерфейс"},
+
+		// тест-диапазон 198.18.0.0/15 (RFC 2544; fake-ip виртуальных адаптеров/VPN)
+		{"benchmark low", "198.18.0.1", "198.18.0.0/15"},
+		{"benchmark high", "198.19.255.254", "198.18.0.0/15"},
+		{"just below benchmark", "198.17.255.255", ""},
+		{"just above benchmark", "198.20.0.1", ""},
+
+		// multicast
+		{"multicast v4 low", "224.0.0.1", "multicast"},
+		{"multicast v4 ssdp", "239.255.255.250", "multicast"},
+		{"multicast v6 all-nodes", "ff02::1", "multicast"},
+		{"multicast v6 bracketed", "[ff05::2]", "multicast"},
+		{"IPv4-mapped multicast", "::ffff:224.0.0.251", "multicast"},
+		{"just below multicast", "223.255.255.255", ""},
+
+		// зарезервированный 240.0.0.0/4 (+ широковещательный)
+		{"reserved low", "240.0.0.1", "240.0.0.0/4"},
+		{"reserved mid", "250.1.2.3", "240.0.0.0/4"},
+		{"limited broadcast", "255.255.255.255", "240.0.0.0/4"},
+		{"IPv4-mapped reserved", "::ffff:240.0.0.1", "240.0.0.0/4"},
+
+		// «*.localhost» и «localhost.» — те же loopback-имена (RFC 6761)
+		{"localhost trailing dot", "localhost.", "loopback"},
+		{"localhost trailing dot upper", "LOCALHOST.", "loopback"},
+		{"subdomain of localhost", "vpn.localhost", "loopback"},
+		{"deep subdomain of localhost", "a.b.Localhost", "loopback"},
+		{"subdomain of localhost trailing dot", "app.localhost.", "loopback"},
+		{"not localhost: glued prefix", "notlocalhost", ""},
+		{"not localhost: localhost as label", "localhost.example.com", ""},
+		{"not localhost: suffix without dot", "mylocalhost", ""},
+
+		// IPv6 с зоной (так адрес выглядит в ipconfig/ip a) — link-local, LAN
+		{"link-local v6 with zone", "fe80::1%eth0", "LAN"},
+		{"link-local v6 with zone bracketed", "[fe80::1%eth0]", "LAN"},
 
 		// public — должно быть пусто
 		{"public v4 google dns", "8.8.8.8", ""},
@@ -84,16 +119,14 @@ func TestLinkHostWarning(t *testing.T) {
 // TestLinkHostWarning_ClassesAreDistinct — предупреждения разных классов не должны совпадать
 // дословно: иначе пользователь не поймёт, private это адрес, loopback или CGNAT.
 func TestLinkHostWarning_ClassesAreDistinct(t *testing.T) {
-	loopback := LinkHostWarning("127.0.0.1")
-	private := LinkHostWarning("192.168.1.1")
-	cgnat := LinkHostWarning("100.64.0.1")
-	unspecified := LinkHostWarning("0.0.0.0")
-
 	all := map[string]string{
-		"loopback":    loopback,
-		"private":     private,
-		"cgnat":       cgnat,
-		"unspecified": unspecified,
+		"loopback":    LinkHostWarning("127.0.0.1"),
+		"private":     LinkHostWarning("192.168.1.1"),
+		"cgnat":       LinkHostWarning("100.64.0.1"),
+		"unspecified": LinkHostWarning("0.0.0.0"),
+		"benchmark":   LinkHostWarning("198.18.0.1"),
+		"multicast":   LinkHostWarning("224.0.0.1"),
+		"reserved":    LinkHostWarning("240.0.0.1"),
 	}
 	seen := map[string]string{}
 	for name, msg := range all {

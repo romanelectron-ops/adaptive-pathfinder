@@ -59,11 +59,11 @@ type RelayServer struct {
 	pendingMu sync.Mutex
 	pending   map[string]*pendingSession // session-id → ожидает парную STREAM
 
-	connMu   sync.Mutex
+	connMu     sync.Mutex
 	connsPerIP map[string]int
 
-	newExitLimiter  *rateLimiter
-	entryLimiter    *rateLimiter
+	newExitLimiter *rateLimiter
+	entryLimiter   *rateLimiter
 
 	ln       net.Listener
 	registry *connRegistry
@@ -82,8 +82,68 @@ type exitSession struct {
 	// wantsSrc — «Выход» прислал CAPS src: NEWSTREAM для него дополняется адресом «Входа».
 	wantsSrc atomic.Bool
 
+	// [ревью 1.1.10, C1/F1] Сессия публикуется в s.exits ДО того, как «Выход» успел прислать
+	// CAPS (он шлёт его только после получения OK — окно не меньше одного RTT; то же при
+	// вытеснении живой сессии переподключением: новая сессия опять «молодая»). «Вход», попавший
+	// в это окно, получал NEWSTREAM без адреса источника, ExitClient звал DialLocal(ctx, "") и
+	// ключ устройства «relay» становился ФАНТОМНЫМ устройством, занимающим слот лимита (при
+	// лимите 1–2 он запирал настоящий телефон — тот самый «фрагментарный» сбой, ради которого
+	// делался релиз 1.1.10). Поэтому handleEntry для «молодой» сессии ждёт capsReady, но не
+	// дольше capsDeadline; зрелая сессия без CAPS (старый «Выход») не задерживается никогда.
+	//
+	// capsReady закрывает runExitControl после ПЕРВОЙ присланной «Выходом» строки (CAPS или
+	// любой иной — иное значит «CAPS не будет», ждать нечего) либо при завершении сессии.
+	capsReady    chan struct{}
+	capsOnce     sync.Once
+	capsDeadline time.Time // момент создания сессии + capsWaitWindow(); нулевой — сессия «зрелая»
+
 	closeOnce sync.Once
 	done      chan struct{}
+}
+
+// capsWaitWindowNs — сколько после создания сессии relay готов подождать CAPS от «Выхода».
+// atomic.Int64, а не голая константа — по той же причине, что streamDialTimeoutNs (см.
+// tunnel_protocol.go): единственный писатель — тесты, сжимающие окно, читатель — горутины
+// handleExit/handleEntry. ~1с покрывает RTT мобильной сети (OK туда + CAPS обратно) с запасом и
+// при этом не делает заметной паузу для старых «Выходов», которые CAPS не шлют вовсе.
+var capsWaitWindowNs atomic.Int64
+
+func init() { capsWaitWindowNs.Store(int64(time.Second)) }
+
+func capsWaitWindow() time.Duration { return time.Duration(capsWaitWindowNs.Load()) }
+
+// markCapsReady снимает ожидание CAPS — идемпотентно; nil-канал (сессия, собранная вручную в
+// тестах без handleExit) — не паника.
+func (sess *exitSession) markCapsReady() {
+	sess.capsOnce.Do(func() {
+		if sess.capsReady != nil {
+			close(sess.capsReady)
+		}
+	})
+}
+
+// awaitCaps даёт «молодой» сессии время заявить свои возможности, прежде чем handleEntry
+// выберет формат NEWSTREAM. Не создаёт горутин: единственные ресурсы — таймер (останавливается
+// сразу) и select, который просыпается по capsReady, по закрытию сессии (вытеснение
+// переподключением, обрыв control-канала — ждать уже нечего, следующая запись всё равно
+// вернёт ошибку) либо по остатку окна. Уже истёкшее окно (зрелая сессия) — немедленный возврат.
+func (sess *exitSession) awaitCaps() {
+	select {
+	case <-sess.capsReady:
+		return
+	default:
+	}
+	remaining := time.Until(sess.capsDeadline)
+	if remaining <= 0 {
+		return
+	}
+	t := time.NewTimer(remaining)
+	defer t.Stop()
+	select {
+	case <-sess.capsReady:
+	case <-sess.done:
+	case <-t.C:
+	}
 }
 
 // exitBinding — TOFU-привязка exit-id → token, ЖИВЁТ ДОЛЬШЕ конкретного TCP-соединения.
@@ -241,7 +301,13 @@ func (s *RelayServer) handleExit(conn net.Conn, ip string, fields []string) {
 	}
 	exitID, token := fields[1], fields[2]
 
-	sess := &exitSession{exitID: exitID, token: token, conn: conn, done: make(chan struct{})}
+	sess := &exitSession{
+		exitID: exitID, token: token, conn: conn, done: make(chan struct{}),
+		// Поля ожидания CAPS обязаны быть заполнены ДО публикации сессии в s.exits ниже —
+		// иначе handleEntry мог бы увидеть сессию с нулевым дедлайном как «зрелую».
+		capsReady:    make(chan struct{}),
+		capsDeadline: time.Now().Add(capsWaitWindow()),
+	}
 	sess.lastSeen.Store(time.Now().UnixNano())
 
 	// [P9, аудит BLACKBOX_2026-09-07, находки A2/B3 #10] «Проверить и зарегистрировать» —
@@ -313,6 +379,9 @@ func (s *RelayServer) handleExit(conn net.Conn, ip string, fields []string) {
 
 	if err := writeLine(conn, cmdOK); err != nil {
 		s.disconnectExitSession(exitID, sess)
+		// Сессия уже была видна «Входам»: не оставляем ждущих CAPS досиживать окно (до
+		// capsWaitWindow) на умершей сессии — они должны сразу получить отказ (ревью 2026-09-30).
+		sess.markCapsReady()
 		return
 	}
 
@@ -373,6 +442,7 @@ func (s *RelayServer) disconnectExitSession(exitID string, sess *exitSession) {
 func (s *RelayServer) runExitControl(sess *exitSession) {
 	defer s.disconnectExitSession(sess.exitID, sess)
 	defer sess.close()
+	defer sess.markCapsReady() // ждущие CAPS «Входы» не должны висеть на умершей сессии
 
 	pingStop := make(chan struct{})
 	defer close(pingStop)
@@ -400,6 +470,7 @@ func (s *RelayServer) runExitControl(sess *exitSession) {
 		}
 		if strings.TrimSpace(line) == cmdPong {
 			sess.lastSeen.Store(time.Now().UnixNano())
+			sess.markCapsReady() // первая строка — не CAPS: «Выход» старой версии, ждать нечего
 			continue
 		}
 		if f := strings.Fields(line); len(f) > 0 && f[0] == cmdCaps {
@@ -409,6 +480,9 @@ func (s *RelayServer) runExitControl(sess *exitSession) {
 				}
 			}
 		}
+		// wantsSrc выставлен ВЫШЕ — проснувшийся handleEntry обязан увидеть уже готовый флаг.
+		// Любая иная первая строка тоже снимает ожидание (см. комментарий capsReady).
+		sess.markCapsReady()
 	}
 }
 
@@ -479,6 +553,12 @@ func (s *RelayServer) handleEntry(conn net.Conn, ip string, fields []string) {
 	}
 
 	newStream := cmdNewStream + " " + sessionID
+	// [ревью 1.1.10, C1/F1] Формат NEWSTREAM зависит от CAPS, который «Выход» присылает не
+	// мгновенно после регистрации: у «молодой» сессии даём ему договорить (до ~capsWaitWindow),
+	// иначе безадресный NEWSTREAM породит фантомное устройство «relay» в лимите.
+	if !exitSess.wantsSrc.Load() {
+		exitSess.awaitCaps()
+	}
 	if exitSess.wantsSrc.Load() && ip != "" {
 		// Адрес «Входа» — для лимита устройств на стороне «Выхода» (см. cmdCaps).
 		newStream += " " + ip

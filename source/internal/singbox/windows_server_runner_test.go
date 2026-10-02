@@ -184,9 +184,11 @@ func TestEnsureInboundFirewallRule_CommandIncludesProgramAndLocalPort(t *testing
 // передавать АКТУАЛЬНЫЙ порт из последнего WriteConfig, не порт из более раннего вызова.
 func TestWindowsServerRunner_Start_PassesCurrentPortToFirewallRule(t *testing.T) {
 	orig := execCommandFn
-	var gotArgs []string
+	// Все вызовы, а не последний: после отказа Start() добавляется снятие правила (delete) —
+	// проверяем ПЕРВЫЙ вызов, то есть заведение правила (add).
+	var calls [][]string
 	execCommandFn = func(name string, args ...string) ([]byte, error) {
-		gotArgs = args
+		calls = append(calls, args)
 		return nil, nil
 	}
 	t.Cleanup(func() { execCommandFn = orig })
@@ -209,7 +211,10 @@ func TestWindowsServerRunner_Start_PassesCurrentPortToFirewallRule(t *testing.T)
 	// ДО попытки запустить процесс — этого достаточно для проверки переданного порта.
 	_ = r.Start(context.Background())
 
-	joined := strings.Join(gotArgs, " ")
+	if len(calls) == 0 {
+		t.Fatal("Start() не вызвал netsh ни разу")
+	}
+	joined := strings.Join(calls[0], " ")
 	if !strings.Contains(joined, "localport=28443") {
 		t.Errorf("Start() передал в EnsureInboundFirewallRule не тот порт: %q", joined)
 	}

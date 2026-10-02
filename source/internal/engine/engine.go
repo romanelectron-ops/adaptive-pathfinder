@@ -4494,11 +4494,23 @@ func (e *Engine) recordLastActiveNode(id string) {
 // сразу в журнале и в статусе Android, а не гадает про «сломанный sing-box». Для публичного адреса
 // и имени хоста текст прежний (предупреждать не о чем: недоступность там — вопрос файрвола/NAT
 // партнёра, а не топологии сети). Вынесено в чистую функцию, чтобы проверяться без движка.
-func chainPartnerUnreachableMessage(name, address string) string {
+//
+// Партнёр, пришедший по relay-ссылке (apf_relay=1), — исключение (ревью 1.1.10, F1): в
+// AddChainPartnerFromLink его Address/Port подменяются на локальный адрес EntryBridge
+// (127.0.0.1:эфемерный порт), а настоящий путь идёт через посредника apf-relay. Loopback здесь —
+// наш собственный мост, а не адрес партнёра, и предупреждение «ссылка сработает только на этом же
+// устройстве» прямо противоречило бы действительности: причину недоступности надо искать в
+// relay/партнёре, а не в топологии сети. Признак — ExtraParams["apf_relay"] (тот же, по которому
+// connectNode и AddChainPartnerFromLink отличают relay-режим); isRelayExitNode тут не годится,
+// он истинен и для ПРЯМОГО партнёра цепочки (IsChainPartner), у которого адрес — настоящий.
+func chainPartnerUnreachableMessage(n *models.Node) string {
 	msg := fmt.Sprintf("⚠ Партнёр цепочки Вход-Выход «%s» недоступен — жду восстановления, "+
-		"не подменяю случайным узлом из общего пула", name)
-	if w := netutil.LinkHostWarning(address); w != "" {
-		msg += fmt.Sprintf(". Возможная причина — адрес партнёра «%s»: %s", address, w)
+		"не подменяю случайным узлом из общего пула", n.Name)
+	if n.ExtraParams["apf_relay"] == "1" {
+		return msg
+	}
+	if w := netutil.LinkHostWarning(n.Address); w != "" {
+		msg += fmt.Sprintf(". Возможная причина — адрес партнёра «%s»: %s", n.Address, w)
 	}
 	return msg
 }
@@ -4656,7 +4668,7 @@ func (e *Engine) emergencySwitch() {
 	// monitor()/Watchdog вызовет emergencySwitch снова, если партнёр всё ещё недоступен —
 	// естественный периодический ретрай без отдельного цикла.
 	if cur != nil && cur.IsChainPartner {
-		e.log(chainPartnerUnreachableMessage(cur.Name, cur.Address))
+		e.log(chainPartnerUnreachableMessage(cur))
 		if err := e.connectNode(cur); err == nil {
 			e.fsm.HandleSuccess(time.Duration(cur.Latency) * time.Millisecond)
 		} else if classifyConnectFailure(err) == failureNode {

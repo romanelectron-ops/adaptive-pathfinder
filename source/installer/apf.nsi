@@ -17,7 +17,7 @@ Unicode true
 
 !define APP_NAME      "APF"
 !define APP_NAME_FULL "APF — Adaptive PathFinder"
-!define APP_VERSION   "1.1.10"
+!define APP_VERSION   "1.1.11"
 !define APP_PUBLISHER "APF Project"
 !define APP_EXE       "APF.exe"
 !define SVC_EXE       "apf-svc.exe"

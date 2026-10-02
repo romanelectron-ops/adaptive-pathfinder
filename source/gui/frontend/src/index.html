@@ -2880,6 +2880,10 @@ let srRunning = false
 // каждые 5с по опросу статуса роли и не должна каждый раз заново дёргать бэкенд ради одного и
 // того же ответа. Единственный писатель — doGenerateServerLink.
 let srLinkWarning = ''
+// srHostUnverified — в «Хост» подставлен вероятный внешний адрес от STUN, порт при этом ещё не
+// проброшен (ревью 2026-09-30): рядом со ссылкой нельзя писать «✓ можно передавать». Сбрасывается,
+// когда владелец правит поле «Хост» сам или адрес подтверждён (Direct/UPnP).
+let srHostUnverified = false
 
 window.loadServerRolePage = async function() {
   try {
@@ -2899,6 +2903,12 @@ window.loadServerRolePage = async function() {
   // сети, поэтому показываем остальные кандидаты подсказкой, а не молча выбираем один.
   const hostInput = document.getElementById('sr-host')
   const hostHint = document.getElementById('sr-host-hint')
+  // Владелец сам правит «Хост» — прежняя пометка «подставлен неподтверждённый адрес» уже неверна.
+  // Слушатель вешаем один раз (страница открывается многократно).
+  if (hostInput && !hostInput.dataset.unverifiedWired) {
+    hostInput.dataset.unverifiedWired = '1'
+    hostInput.addEventListener('input', () => { srHostUnverified = false })
+  }
   try {
     const candidates = await App.ServerRoleLocalIPCandidates()
     if (candidates && candidates.length > 0) {
@@ -2954,12 +2964,22 @@ function updateServerLinkAvailabilityNote() {
   if (!el || !panel || panel.style.display === 'none') return
   // Живой инцидент 2026-09-29: безусловное «уже можно передавать» было ложью, когда хост ссылки —
   // приватный адрес (10.x.x.x и т.п.): партнёр из ДРУГОЙ сети получал dial tcp ...: i/o timeout без
-  // объяснения. Пока есть предупреждение (srLinkWarning), честно говорим «только в той же сети /
-  // нужен внешний адрес или relay», а не «можно передавать».
+  // объяснения. Пока есть предупреждение (srLinkWarning), честно говорим «см. предупреждение
+  // выше», а не «можно передавать».
+  // Ревью F2: прежние тексты обещали «сработает только в той же сети» — для loopback (только это
+  // устройство), 0.0.0.0 (не годится вообще) и CGNAT (недостижим даже из своей сети оператора)
+  // это неверно. Конкретную причину и что делать называет само предупреждение (LinkHostWarning,
+  // его текст отличается по классу адреса), поэтому здесь формулировка от класса не зависит.
   if (srLinkWarning) {
     el.textContent = srRunning
-      ? '⚠ Роль «Выход» запущена, но эта ссылка сработает у партнёра «Вход» только в той же сети, что и это устройство (см. предупреждение выше). Для другой сети нужен внешний адрес хоста или relay.'
-      : 'ℹ Роль «Выход» ещё не запущена. После запуска эта ссылка сработает у партнёра «Вход» только в той же сети, что и это устройство (см. предупреждение выше) — для другой сети нужен внешний адрес хоста или relay.'
+      ? '⚠ Роль «Выход» запущена, но по этой ссылке партнёр «Вход» может не достучаться — см. предупреждение выше.'
+      : 'ℹ Роль «Выход» ещё не запущена. После запуска по этой ссылке партнёр «Вход» может не достучаться — см. предупреждение выше.'
+    return
+  }
+  if (srHostUnverified) {
+    el.textContent = srRunning
+      ? 'ℹ Роль «Выход» запущена, но в ссылке — вероятный внешний адрес, порт на нём ещё не проброшен: у партнёра «Вход» из другой сети ссылка заработает после проброса порта или через relay.'
+      : 'ℹ Роль «Выход» ещё не запущена, а в ссылке — вероятный внешний адрес, порт на нём ещё не проброшен: у партнёра «Вход» из другой сети ссылка заработает после запуска и проброса порта (или через relay).'
     return
   }
   el.textContent = srRunning
@@ -2980,6 +3000,17 @@ setInterval(async () => {
 }, 5000)
 
 // Метод из internal/relay.Method (const iota): 0=Unknown 1=Direct 2=UPnP 3=ManualPort 4=Relay
+// 5=Undetermined («не удалось определить»: ни одна проба не дала адреса, has_address=false).
+//
+// Живой инцидент 2026-09-29 («IP не меняется»): найденный адрес подставлялся в «Хост» только при
+// Direct/UPnP ИЛИ пустом поле, а поле loadServerRolePage уже заполнила локальным адресом при
+// открытии страницы — STUN-результат (ManualPort) его не заменял, и самого найденного адреса в
+// тексте результата не было видно вовсе. Теперь поле с заведомо бесполезным для другой сети
+// значением (App.LinkHostWarning непуст: LAN/loopback/CGNAT/0.0.0.0) заменяется найденным
+// ПУБЛИЧНЫМ адресом. Нормальное значение, введённое пользователем (публичный IP/домен),
+// не затираем; приватный/CGNAT-адрес от STUN (method 4) не подставляем никогда — он не лучше
+// того, что уже в поле. Direct/UPnP заменяют поле как и раньше: адрес подтверждён реальным
+// проходом порта, это и есть правильный хост.
 window.doDetectReachability = async function() {
   const el = document.getElementById('sr-reachability-result')
   const port = parseInt(document.getElementById('sr-port').value, 10)
@@ -2990,20 +3021,71 @@ window.doDetectReachability = async function() {
   }
   el.textContent = 'Определяю доступность (UPnP → STUN, до 10с)...'
   el.className = ''
+  // Пустая строка = хост нормален для внешней сети. Сбой вызова (старая сборка без биндинга)
+  // считаем «предупреждать не о чем» — это подсказка, а не условие работы (как в doGenerateServerLink).
+  const hostWarn = async (h) => {
+    try { return (await App.LinkHostWarning(h)) || '' } catch (e) { return '' }
+  }
   try {
     const r = await App.ServerRoleDetectReachability(port)
-    const isGood = r.method === 1 || r.method === 2 // Direct или UPnP — порт реально подтверждён
+    const m = r.method
+    // Метод 5 (не определено) — не «isGood» и не ошибка: это честный информационный исход.
+    const isGood = m === 1 || m === 2 // Direct или UPnP — порт реально подтверждён
     el.className = isGood ? 'add-feedback ok' : 'add-feedback'
     let text = (isGood ? '✓ ' : 'ℹ ') + r.explanation
+    // Пояснение отдельным предложением: Explain(...) у Go иногда уже кончается точкой — без этой
+    // склейки получалось «..» (ревью 2026-09-30).
+    const addSentence = (s) => { text = text.replace(/[\s.]+$/, '') + '. ' + s }
+    const hostInput = document.getElementById('sr-host')
+    const curHost = hostInput.value.trim()
+    let filled = false
+    let foundPublic = false
     if (r.has_address) {
-      text += ' — внешний адрес: ' + r.external_host + ':' + r.external_port
-      const hostInput = document.getElementById('sr-host')
-      if (isGood || !hostInput.value.trim()) hostInput.value = r.external_host
+      // Единое правило для Direct/UPnP/STUN (ревью 2026-09-30): адрес подставляется, только если он
+      // публичный И текущее значение поля бесполезно для другой сети (пусто/LAN/loopback/CGNAT).
+      // Раньше Direct/UPnP подставлялись безусловно — приватный адрес роутера при двойном NAT
+      // выдавался как «✓ всё готово», а нормальный ручной домен молча затирался IP-адресом.
+      foundPublic = m !== 4 && !(await hostWarn(r.external_host))
+      const curUseless = !curHost || !!(await hostWarn(curHost))
+      filled = foundPublic && curUseless
+      const addr = r.external_host + ':' + r.external_port
+      if (!foundPublic) {
+        // Причин недостижимости несколько (внутренний адрес, тест-диапазон 198.18/15, операторский
+        // CGNAT), поэтому называем их нейтрально, а не «приватный или CGNAT».
+        text += ' — найденный адрес ' + r.external_host + ' недостижим снаружи (внутренний, тестовый или операторский), поэтому в «Хост» не подставлен'
+      } else if (filled && isGood) {
+        text += ' — внешний адрес: ' + addr + ' (подставлен в «Хост»' + (curHost ? ', было «' + curHost + '»' : '') + ')'
+      } else if (filled) {
+        text += ' — подставлен вероятный внешний адрес ' + r.external_host + (curHost ? ' (было «' + curHost + '»)' : '') +
+          ' — ссылка заработает у партнёра после проброса порта ' + r.external_port + ' или через relay'
+      } else {
+        text += ' — внешний адрес: ' + addr + ' (в «Хост» не подставлен: там уже введено «' + curHost + '»)'
+      }
     }
-    if (r.method === 3) {
-      text += '. Порт ' + port + ' нужно пробросить на роутере вручную на этот же порт локально.'
+    // Адрес есть, но он не публичный (у Go это method 4) — пробросом порта не лечится, только relay.
+    const relayOnly = m === 4 || (m === 3 && r.has_address && !foundPublic)
+    if (relayOnly) {
+      addSentence('Прямое подключение снаружи невозможно — используйте relay-посредник (адрес relay и отпечаток — в «Необязательных параметрах» ниже).')
+    } else if (m === 3) {
+      // Тот же живой инцидент: компьютер сидел в раздаче с телефона (хотспот) — «пробросьте порт
+      // на роутере» там невыполнимо, роутера, который можно настроить, нет.
+      addSentence('Порт ' + port + ' нужно пробросить на роутере вручную на этот же порт локально. ' +
+        'Если этот компьютер в раздаче с телефона (точка доступа, модем) — проброс невозможен, нужен relay (адрес relay — в «Необязательных параметрах» ниже).')
+    } else if (m === 5) {
+      addSentence('Адрес в «Хост» оставлен как есть — введите публичный адрес или домен вручную либо задайте relay в «Необязательных параметрах» ниже.')
     }
     el.textContent = text
+    // Подставленный STUN-адрес НЕ подтверждён (порт не проброшен): пометка меняет текст рядом со
+    // ссылкой с «✓ можно передавать» на честное «после проброса порта или через relay».
+    if (filled) srHostUnverified = !isGood
+    if (filled) {
+      hostInput.value = r.external_host
+      // Ссылка, которая уже показана в панели ниже, собрана со СТАРЫМ хостом (и старым
+      // предупреждением) — без пересборки владелец скопировал бы прежний адрес и снова решил,
+      // что «IP не меняется». Тихо: свои сообщения результата уже выведены выше.
+      const panel = document.getElementById('sr-link-panel')
+      if (panel && panel.style.display !== 'none') await doGenerateServerLink(true)
+    }
   } catch (e) {
     el.textContent = '✗ Не удалось определить: ' + e
     el.className = 'add-feedback err'
@@ -3024,83 +3106,102 @@ window.doGenerateServerIdentity = async function() {
   }
 }
 
+// Ревью F4: StartServerRole теперь может блокироваться до ~120 с (ожидание готовности sing-box
+// и, если задан, relay-канала), а кнопка при этом оставалась активной и без какой-либо реакции —
+// повторный клик запускал вторую параллельную попытку поверх первой. Поэтому на всё время вызова
+// (включая подтверждение экспорта ключа) кнопка блокируется и подписывается «Запуск… (до 2
+// минут)», повторный клик игнорируется (srStarting), блокировка снимается в finally — в том числе
+// при раннем return по проверкам ниже.
+let srStarting = false
 window.doStartServerRole = async function() {
-  const fb = document.getElementById('sr-fb')
-  if (!srIdentity) {
-    fb.textContent = '✗ Сначала сгенерируйте ключ звена'
-    fb.className = 'add-feedback err'
-    return
-  }
-  // S-3-frontend (ТЗ v1.4): L1-WEB закрыл утечку приватного ключа Reality через
-  // GET /api/server-role/identity — у наблюдателя (это окно НЕ владеет движком, ходит в
-  // Web UI владельца) loadServerRolePage()/ServerRoleLoadIdentity теперь получает identity с
-  // ПУСТЫМ приватным ключом. Раньше страница молча пыталась бы поднять роль «Выход» с этим
-  // пустым ключом. Ключ целиком — только явным подтверждённым действием
-  // (ServerRoleExportIdentity → POST .../identity/export с confirm=EXPORT на сервере), а не
-  // автоматически при каждом открытии страницы. У владельца PrivateKey и так полон (прямое
-  // чтение локального файла, HTTP-поверхности нет) — эта ветка для него не сработает вовсе.
-  if (!srIdentity.PrivateKey) {
-    if (!confirm(
-      'Для запуска роли «Выход» нужен приватный ключ звена целиком. Он будет запрошен у ' +
-      'APF ещё раз — храните готовую ссылку так же осторожно, как сам ключ. Продолжить?'
-    )) return
-    try {
-      const full = await App.ServerRoleExportIdentity()
-      if (!full) {
-        fb.textContent = '✗ Ключ ещё не сгенерирован'
-        fb.className = 'add-feedback err'
-        return
-      }
-      srIdentity = full
-    } catch (e) {
-      fb.textContent = '✗ Не удалось получить ключ звена: ' + e
+  if (srStarting) return
+  srStarting = true
+  const btn = document.getElementById('sr-btn-start')
+  const btnLabel = btn.textContent
+  btn.disabled = true
+  try {
+    const fb = document.getElementById('sr-fb')
+    if (!srIdentity) {
+      fb.textContent = '✗ Сначала сгенерируйте ключ звена'
       fb.className = 'add-feedback err'
       return
     }
-  }
-  const host = document.getElementById('sr-host').value.trim()
-  const port = parseInt(document.getElementById('sr-port').value, 10)
-  if (!host || !port) {
-    fb.textContent = '✗ Укажите хост и порт'
-    fb.className = 'add-feedback err'
-    return
-  }
-  const realityDest = document.getElementById('sr-reality-dest').value.trim()
-  const relayAddr = document.getElementById('sr-relay-addr').value.trim()
-  const relayFingerprint = document.getElementById('sr-relay-fingerprint').value.trim()
-  if (relayAddr && !relayFingerprint) {
-    fb.textContent = '✗ Указан адрес relay, но не указан его отпечаток TLS-сертификата — без него relay откажет'
-    fb.className = 'add-feedback err'
-    return
-  }
-
-  fb.textContent = 'Запуск...'
-  fb.className = 'add-feedback'
-  try {
-    // relay_server_addr/relay_server_fingerprint сохраняются в конфиг ДО запуска —
-    // StartServerRole (Go) поднимает relay.ExitClient только если оба поля уже заданы в
-    // конфиге на момент вызова (TZ_RELAY_HARDENING_2026-08-29.md кластер B — TLS с
-    // закреплённым отпечатком обязателен, без него ExitClient откажет fail-closed).
-    await App.PatchConfig({ relay_server_addr: relayAddr, relay_server_fingerprint: relayFingerprint })
-    await App.ServerRoleStart(srIdentity, port, realityDest)
-    updateServerRoleStatusUI(true)
-    fb.textContent = '✓ Роль «Выход» запущена'
-    fb.className = 'add-feedback ok'
-    addLog('Роль «Выход»: слушаю ' + host + ':' + port, 'ok')
-    // P1-2-EXIT-ROLE-UX (ТЗ v1.6): та же сборка ссылки, что и у отдельной кнопки «Сгенерировать
-    // ссылку доступа» (silent=true — свои сообщения уже показаны в sr-fb/addLog выше, не
-    // перетираем их текстом из doGenerateServerLink). Ошибка сборки НЕ проглатывается молча —
-    // роль в этом случае всё равно уже запущена, поэтому это отдельное, более мягкое сообщение,
-    // а не общий '✗ Ошибка' catch ниже.
-    const link = await doGenerateServerLink(true)
-    if (!link) {
-      fb.textContent += ' (не удалось собрать ссылку — соберите её кнопкой «Сгенерировать ссылку доступа» ниже)'
-      addLog('Роль «Выход»: запущена, но авто-сборка ссылки не удалась — используйте кнопку «Сгенерировать ссылку доступа»', 'err')
+    // S-3-frontend (ТЗ v1.4): L1-WEB закрыл утечку приватного ключа Reality через
+    // GET /api/server-role/identity — у наблюдателя (это окно НЕ владеет движком, ходит в
+    // Web UI владельца) loadServerRolePage()/ServerRoleLoadIdentity теперь получает identity с
+    // ПУСТЫМ приватным ключом. Раньше страница молча пыталась бы поднять роль «Выход» с этим
+    // пустым ключом. Ключ целиком — только явным подтверждённым действием
+    // (ServerRoleExportIdentity → POST .../identity/export с confirm=EXPORT на сервере), а не
+    // автоматически при каждом открытии страницы. У владельца PrivateKey и так полон (прямое
+    // чтение локального файла, HTTP-поверхности нет) — эта ветка для него не сработает вовсе.
+    if (!srIdentity.PrivateKey) {
+      if (!confirm(
+        'Для запуска роли «Выход» нужен приватный ключ звена целиком. Он будет запрошен у ' +
+        'APF ещё раз — храните готовую ссылку так же осторожно, как сам ключ. Продолжить?'
+      )) return
+      try {
+        const full = await App.ServerRoleExportIdentity()
+        if (!full) {
+          fb.textContent = '✗ Ключ ещё не сгенерирован'
+          fb.className = 'add-feedback err'
+          return
+        }
+        srIdentity = full
+      } catch (e) {
+        fb.textContent = '✗ Не удалось получить ключ звена: ' + e
+        fb.className = 'add-feedback err'
+        return
+      }
     }
-  } catch (e) {
-    fb.textContent = '✗ Ошибка: ' + e
-    fb.className = 'add-feedback err'
-    addLog('Роль «Выход»: не удалось запустить: ' + e, 'err')
+    const host = document.getElementById('sr-host').value.trim()
+    const port = parseInt(document.getElementById('sr-port').value, 10)
+    if (!host || !port) {
+      fb.textContent = '✗ Укажите хост и порт'
+      fb.className = 'add-feedback err'
+      return
+    }
+    const realityDest = document.getElementById('sr-reality-dest').value.trim()
+    const relayAddr = document.getElementById('sr-relay-addr').value.trim()
+    const relayFingerprint = document.getElementById('sr-relay-fingerprint').value.trim()
+    if (relayAddr && !relayFingerprint) {
+      fb.textContent = '✗ Указан адрес relay, но не указан его отпечаток TLS-сертификата — без него relay откажет'
+      fb.className = 'add-feedback err'
+      return
+    }
+
+    btn.textContent = '⏳ Запуск… (до 2 минут)'
+    fb.textContent = 'Запуск… (до 2 минут)'
+    fb.className = 'add-feedback'
+    try {
+      // relay_server_addr/relay_server_fingerprint сохраняются в конфиг ДО запуска —
+      // StartServerRole (Go) поднимает relay.ExitClient только если оба поля уже заданы в
+      // конфиге на момент вызова (TZ_RELAY_HARDENING_2026-08-29.md кластер B — TLS с
+      // закреплённым отпечатком обязателен, без него ExitClient откажет fail-closed).
+      await App.PatchConfig({ relay_server_addr: relayAddr, relay_server_fingerprint: relayFingerprint })
+      await App.ServerRoleStart(srIdentity, port, realityDest)
+      updateServerRoleStatusUI(true)
+      fb.textContent = '✓ Роль «Выход» запущена'
+      fb.className = 'add-feedback ok'
+      addLog('Роль «Выход»: слушаю ' + host + ':' + port, 'ok')
+      // P1-2-EXIT-ROLE-UX (ТЗ v1.6): та же сборка ссылки, что и у отдельной кнопки «Сгенерировать
+      // ссылку доступа» (silent=true — свои сообщения уже показаны в sr-fb/addLog выше, не
+      // перетираем их текстом из doGenerateServerLink). Ошибка сборки НЕ проглатывается молча —
+      // роль в этом случае всё равно уже запущена, поэтому это отдельное, более мягкое сообщение,
+      // а не общий '✗ Ошибка' catch ниже.
+      const link = await doGenerateServerLink(true)
+      if (!link) {
+        fb.textContent += ' (не удалось собрать ссылку — соберите её кнопкой «Сгенерировать ссылку доступа» ниже)'
+        addLog('Роль «Выход»: запущена, но авто-сборка ссылки не удалась — используйте кнопку «Сгенерировать ссылку доступа»', 'err')
+      }
+    } catch (e) {
+      fb.textContent = '✗ Ошибка: ' + e
+      fb.className = 'add-feedback err'
+      addLog('Роль «Выход»: не удалось запустить: ' + e, 'err')
+    }
+  } finally {
+    srStarting = false
+    btn.disabled = false
+    btn.textContent = btnLabel
   }
 }
 
@@ -3173,7 +3274,12 @@ window.doGenerateServerLink = async function(silent) {
     }
     updateServerLinkAvailabilityNote()
     if (warn) {
-      setFb('⚠ Ссылка собрана, но работает только в одной сети с этим устройством — см. предупреждение ниже', '')
+      // Та же правка F2, что и в updateServerLinkAvailabilityNote: «только в одной сети» верно не
+      // для каждого класса адреса (loopback/0.0.0.0/CGNAT), уточняет предупреждение ниже.
+      setFb('⚠ Ссылка собрана, но у неё есть оговорка по адресу хоста — см. предупреждение ниже', '')
+    } else if (srHostUnverified) {
+      // Тот же смысл, что у пометки рядом со ссылкой: адрес вероятный, не подтверждённый.
+      setFb('ℹ Ссылка собрана с вероятным внешним адресом — порт на нём ещё не проброшен (см. пометку ниже)', '')
     } else {
       setFb('✓ Ссылка собрана', 'ok')
     }

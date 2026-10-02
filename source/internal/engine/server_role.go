@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/apf/adaptive-pathfinder/internal/config"
@@ -35,6 +36,152 @@ import (
 // фоне (см. StopServerRole): отсутствие UPnP-роутера/маппинга не должно ни на миг задерживать
 // сам факт остановки роли, которую пользователь уже видит как мгновенное действие.
 const upnpUnmapTimeout = 5 * time.Second
+
+// Швы для тестов: настоящий netsh меняет реальный файрвол Windows (StopServerRole снимает
+// правило по имени — им же пользуется и работающая на машине роль «Выход»), а настоящий runner
+// запускает sing-box.exe — недопустимо под `go test` (тот же приём, что execCommandFn в
+// internal/singbox и discoverUPnPClientsFn в internal/relay). Раньше у StartServerRole/
+// StopServerRole шва не было вовсе, поэтому у них не было ни одного теста (см. заголовок
+// internal/web/server_scenarios_v3_test.go).
+var (
+	newServerRunnerFn = func() singbox.ServerRunner {
+		return singbox.NewWindowsServerRunner(config.BinDir(), config.DataDir())
+	}
+	ensureInboundFirewallRuleFn = singbox.EnsureInboundFirewallRule
+	removeInboundFirewallRuleFn = singbox.RemoveInboundFirewallRule
+)
+
+// ErrServerRoleStarting — повторный StartServerRole, пока предыдущий запуск ещё не вернулся.
+//
+// Ревью 1.1.10 (compat F5). Запуск роли теперь законно длится до serverRoleReadyTimeout (120 с,
+// живой случай 2026-09-29: процессор занят на 100%, порт sing-box открывается от 3 до 48 с), а
+// runner публикуется в e.serverRoleRunner только ПОСЛЕ возврата Start. За это окно StopServerRole
+// не видел ни runner, ни запуск и тихо возвращал nil («остановлено», а sing-box через минуту всё
+// равно поднимался), второй StartServerRole видел runner==nil и создавал ВТОРОЙ runner поверх
+// того же server_current.json и порта. Одиночный запуск (single-flight) закрывает оба хода;
+// вызывающая сторона может отличить этот отказ через errors.Is.
+var ErrServerRoleStarting = errors.New("запуск роли «Выход» уже выполняется")
+
+// serverRoleStartCancelWait — сколько StopServerRole ждёт, пока прерванный запуск реально
+// вернётся. Отмена контекста доходит до awaitReady за один тик опроса порта (~150 мс), но
+// создание процесса ОС бывает медленным (замеры на загруженной машине — десятки секунд) и отмену
+// не слушает; вечно держать вызывающего (HTTP-обработчик остановки) из-за этого нельзя. По
+// истечении срока Stop идёт дальше: запуск уже отменён и сам уберёт за собой, когда вернётся
+// (см. проверку контекста после runner.Start в StartServerRole). var — чтобы тест не ждал секунды.
+var serverRoleStartCancelWait = 15 * time.Second
+
+// listenPublicFn — шов публичного listener'а роли. В тестах подменяется на 127.0.0.1:0: go test
+// не должен открывать порт на всех интерфейсах (Windows покажет владельцу запрос брандмауэра
+// для каждого нового тестового exe).
+var listenPublicFn = func(port int) (net.Listener, error) {
+	return net.Listen("tcp", fmt.Sprintf(":%d", port))
+}
+
+// serverRoleStart — состояние ОДНОГО выполняющегося StartServerRole: cancel прерывает ожидание
+// порта в runner.Start, done закрывается, когда StartServerRole вернулся (после этого и
+// runner, и firewall-правила уже убраны за неудачным запуском).
+type serverRoleStart struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// Состояние single-flight лежит отдельно от serverRoleMu: замок serverRoleMu защищает поля роли
+// и берётся коротко, а запуск идёт минуты — держать его на время runner.Start нельзя (Stop и
+// опрос статуса встали бы намертво). serverRoleStartMu защищает только эту карту и НЕ берётся
+// вокруг runner.Start / IsRunning. Карта, а не поля Engine: запись существует только на время
+// запуска (begin добавляет, finish удаляет), утечки записей между запусками нет.
+var (
+	serverRoleStartMu sync.Mutex
+	serverRoleStarts  = map[*Engine]*serverRoleStart{}
+	// serverRoleRunCancels — отмена контекста, ПОД КОТОРЫМ живёт уже запущенный sing-box роли.
+	// Process.Start создаёт процесс через exec.CommandContext(ctx, …): отмена контекста убивает
+	// дочерний процесс. Поэтому у УСПЕШНОГО запуска контекст нельзя отменять — он должен жить,
+	// пока живёт роль (ревью 2026-09-30 поймало это в первой версии single-flight: defer
+	// отменял контекст при любом возврате, и каждый успешный «Запустить» убивал свежий sing-box).
+	// Отмена хранится здесь и вызывается только когда роль остановлена (StopServerRole) либо
+	// следующим успешным запуском, у которого прежний процесс уже остановлен.
+	serverRoleRunCancels = map[*Engine]context.CancelFunc{}
+)
+
+// beginServerRoleStart занимает единственный слот запуска. Если слот занят — ErrServerRoleStarting.
+// Возвращает контекст запуска (его отменяет StopServerRole) и finish, который обязан быть вызван
+// ровно один раз после окончания запуска. Контекст — от Background, а не от
+// e.currentCtx(): у роли «Выход» жизненный цикл независим от клиентского Connect/Disconnect
+// (см. поля serverRole* в Engine), Engine.Stop не должен прерывать её запуск.
+//
+// finish(ok): при неудаче (ok=false) контекст отменяется сразу; при успехе (ok=true) контекст
+// НЕ отменяется — он привязан к времени жизни запущенного sing-box (см. serverRoleRunCancels).
+func (e *Engine) beginServerRoleStart() (context.Context, func(ok bool), error) {
+	serverRoleStartMu.Lock()
+	defer serverRoleStartMu.Unlock()
+	if _, busy := serverRoleStarts[e]; busy {
+		return nil, nil, fmt.Errorf("StartServerRole: %w — дождитесь его окончания или остановите роль", ErrServerRoleStarting)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	st := &serverRoleStart{cancel: cancel, done: make(chan struct{})}
+	serverRoleStarts[e] = st
+	return ctx, func(ok bool) {
+		// Слот освобождается ДО закрытия done: тот, кто дождался done (StopServerRole), обязан
+		// сразу же мочь запустить роль заново.
+		serverRoleStartMu.Lock()
+		delete(serverRoleStarts, e)
+		var prev context.CancelFunc
+		if ok {
+			prev = serverRoleRunCancels[e]
+			serverRoleRunCancels[e] = cancel
+		}
+		serverRoleStartMu.Unlock()
+		if ok {
+			// Контекст предыдущего успешного запуска: его sing-box к этому моменту уже остановлен
+			// (перезапуск идёт через runner.Stop до нового Start), отмена безвредна и освобождает ресурсы.
+			if prev != nil {
+				prev()
+			}
+		} else {
+			cancel()
+		}
+		close(st.done)
+	}, nil
+}
+
+// releaseServerRoleRunCtx отменяет контекст запущенного sing-box роли — вызывается ПОСЛЕ
+// runner.Stop() в StopServerRole (процесс уже остановлен, отмена лишь освобождает ресурсы).
+func (e *Engine) releaseServerRoleRunCtx() {
+	serverRoleStartMu.Lock()
+	cancel := serverRoleRunCancels[e]
+	delete(serverRoleRunCancels, e)
+	serverRoleStartMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// abortServerRoleStart прерывает выполняющийся StartServerRole (если он есть) и ждёт, пока он
+// вернётся, но не дольше serverRoleStartCancelWait. Нет запуска — ничего не делает.
+func (e *Engine) abortServerRoleStart() {
+	serverRoleStartMu.Lock()
+	st := serverRoleStarts[e]
+	serverRoleStartMu.Unlock()
+	if st == nil {
+		return
+	}
+	st.cancel()
+	e.log("Роль «Выход»: остановка во время запуска — запуск sing-box прерван, жду его возврата")
+	timer := time.NewTimer(serverRoleStartCancelWait)
+	defer timer.Stop()
+	select {
+	case <-st.done:
+	case <-timer.C:
+		e.log(fmt.Sprintf("Роль «Выход»: запуск не вернулся за %s после отмены (процесс ещё создаётся ОС) — "+
+			"он уберёт за собой сам, как только вернётся", serverRoleStartCancelWait))
+	}
+}
+
+// serverRoleStartCancelled — единая ошибка «запуск прерван остановкой роли»: отличима от
+// настоящего отказа запуска (пользователь сам нажал «Остановить», пугать его ошибкой не надо).
+func serverRoleStartCancelled(cause error) error {
+	return fmt.Errorf("StartServerRole: запуск отменён — роль «Выход» остановлена во время запуска: %w", cause)
+}
 
 // defaultMaxConnectedClients — дефолты по роли устройства (docs/TZ_APF_RELAY_v1.0.md §10.1).
 // ПК-обычный по умолчанию (5) — «выделенный сервер» (20) требует явного выбора пользователя
@@ -285,10 +432,27 @@ func (e *Engine) BuildServerRoleLink(id singbox.ServerIdentity, host string, lis
 // только внутренняя цель AdmissionProxy (Retarget) — уже подключённые «Входы» не видят на этом
 // шаге ни одного мгновения разрыва (единственный реальный разрыв — на шаге (2), время
 // перезапуска sing-box-процесса, обычно порядка десятков мс).
-func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.ServerIdentity) error {
+//
+// [ревью 1.1.10, compat F5] Запуск — одиночный (single-flight): пока предыдущий StartServerRole
+// не вернулся, повторный вызов сразу получает ErrServerRoleStarting и НЕ создаёт второй runner.
+// Ожидание порта sing-box теперь идёт до двух минут, а runner виден остальному коду только после
+// возврата Start, — без этого второй «Запустить» поднимал второй sing-box поверх первого, а
+// «Остановить» в это окно ничего не делало. StopServerRole отменяет контекст запуска: ожидание
+// порта в Process.awaitReady слушает ctx.Done() и добивает процесс, запуск возвращает ошибку
+// «отменён», а Windows-runner при ошибке Start сам снимает своё firewall-правило.
+func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.ServerIdentity) (retErr error) {
 	if realityDest == "" {
 		realityDest = singbox.GoodRealitySNI[0]
 	}
+
+	startCtx, finishStart, err := e.beginServerRoleStart()
+	if err != nil {
+		e.log("Роль «Выход»: повторный запуск отвергнут — предыдущий ещё выполняется")
+		return err
+	}
+	// Контекст запуска отменяется только при НЕУДАЧЕ: у успешного запуска он привязан к процессу
+	// sing-box (exec.CommandContext) и должен жить, пока живёт роль — см. serverRoleRunCancels.
+	defer func() { finishStart(retErr == nil) }()
 
 	internalPort, err := netutil.ReserveFreePort()
 	if err != nil {
@@ -303,12 +467,24 @@ func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.
 
 	wasRunning := runner != nil && runner.IsRunning()
 	if runner == nil {
-		runner = singbox.NewWindowsServerRunner(config.BinDir(), config.DataDir())
+		runner = newServerRunnerFn()
+		// Вывод sing-box роли — в журнал: без этого «причина в строках [sing-box] выше»
+		// вела в пустоту (см. windowsServerRunner.SetLogger).
+		if l, ok := runner.(interface{ SetLogger(func(string)) }); ok {
+			l.SetLogger(e.log)
+		}
 	}
 
 	doc := singbox.BuildServerConfig(id, internalPort, realityDest)
 	if err := runner.WriteConfig(doc); err != nil {
 		return fmt.Errorf("StartServerRole: %w", err)
+	}
+
+	// Остановка пришла ещё до запуска sing-box (пока резервировали порт и писали конфиг) — не
+	// трогаем ни работающий старый процесс, ни новый: StopServerRole сам остановит всё, что есть.
+	if err := startCtx.Err(); err != nil {
+		e.log("Роль «Выход»: запуск прерван остановкой роли до старта sing-box")
+		return serverRoleStartCancelled(err)
 	}
 
 	if wasRunning {
@@ -317,12 +493,38 @@ func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.
 		}
 	}
 
-	if err := runner.Start(context.Background()); err != nil {
+	e.log("Роль «Выход»: запускаю sing-box (на загруженном компьютере это может занять до двух минут)…")
+	if err := runner.Start(startCtx); err != nil {
+		cancelled := startCtx.Err() != nil
 		if wasRunning {
 			e.teardownServerRoleAdmissionAndExit()
-			e.log("Роль «Выход»: перезапуск с новой конфигурацией не удался, роль остановлена — прежние настройки автоматически не восстанавливаются")
+			if !cancelled {
+				e.log("Роль «Выход»: перезапуск с новой конфигурацией не удался, роль остановлена — прежние настройки автоматически не восстанавливаются")
+			}
+		}
+		if cancelled {
+			// Отмена — не отказ запуска: пользователь сам остановил роль. Cold start: runner в
+			// e.serverRoleRunner ещё не опубликован, добавлять нечего — Process.awaitReady уже
+			// добил sing-box, а windowsServerRunner.Start снял своё firewall-правило.
+			e.log("Роль «Выход»: запуск прерван остановкой роли")
+			return serverRoleStartCancelled(err)
 		}
 		return fmt.Errorf("StartServerRole: %w", err)
+	}
+
+	// Гонка на границе: sing-box успел открыть порт в тот же миг, когда пришла остановка (Start
+	// вернул nil, хотя контекст уже отменён). Публиковать такую роль нельзя — StopServerRole
+	// считает свою работу сделанной, как только запуск вернулся, и поднятый после этого
+	// AdmissionProxy остался бы жить сам по себе. Останавливаем свой же sing-box и выходим.
+	if err := startCtx.Err(); err != nil {
+		if stopErr := runner.Stop(); stopErr != nil {
+			e.log(fmt.Sprintf("Роль «Выход»: не удалось остановить sing-box, поднявшийся одновременно с остановкой роли: %v", stopErr))
+		}
+		if wasRunning {
+			e.teardownServerRoleAdmissionAndExit()
+		}
+		e.log("Роль «Выход»: запуск прерван остановкой роли, sing-box остановлен")
+		return serverRoleStartCancelled(err)
 	}
 
 	e.serverRoleMu.Lock()
@@ -354,7 +556,7 @@ func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.
 		e.teardownServerRoleAdmissionAndExit()
 	}
 
-	publicLn, err := net.Listen("tcp", fmt.Sprintf(":%d", listenPort))
+	publicLn, err := listenPublicFn(listenPort)
 	if err != nil {
 		runner.Stop()
 		return fmt.Errorf("StartServerRole: публичный порт %d занят: %w", listenPort, err)
@@ -366,7 +568,7 @@ func (e *Engine) StartServerRole(listenPort int, realityDest string, id singbox.
 	// не требует лишней элевации; при явном запуске без повышения (или на не-Windows) просто
 	// не сработает — не блокируем публичный листенер из-за этого, только логируем.
 	if exePath, exeErr := os.Executable(); exeErr == nil {
-		if fwErr := singbox.EnsureInboundFirewallRule(admissionProxyFirewallRuleName, exePath, listenPort); fwErr != nil {
+		if fwErr := ensureInboundFirewallRuleFn(admissionProxyFirewallRuleName, exePath, listenPort); fwErr != nil {
 			e.log(fmt.Sprintf("Роль «Выход»: не удалось завести правило файрвола (%v) — "+
 				"«Вход» из другой сети может не достучаться, пока правило не добавлено вручную", fwErr))
 		}
@@ -492,12 +694,20 @@ func (e *Engine) teardownServerRoleAdmissionAndExit() {
 	if admissionCancel != nil {
 		admissionCancel()
 	}
-	singbox.RemoveInboundFirewallRule(admissionProxyFirewallRuleName)
+	removeInboundFirewallRuleFn(admissionProxyFirewallRuleName)
 }
 
 // StopServerRole останавливает роль «Выход». Идемпотентен: ни разу не запущенная или уже
 // остановленная роль — не ошибка (тот же контракт, что у Process.Stop/Android StopServerRole).
+//
+// [ревью 1.1.10, compat F5] Если в этот момент идёт StartServerRole (ожидание порта sing-box до
+// двух минут), сначала прерываем его и дожидаемся возврата (abortServerRoleStart). Раньше Stop
+// в это окно видел serverRoleRunner==nil (runner публикуется только после Start) и тихо
+// возвращал nil, а sing-box через минуту всё равно поднимался. Снимок состояния роли берётся
+// ПОСЛЕ ожидания: запуск мог успеть что-то опубликовать, и это «что-то» тоже надо погасить.
 func (e *Engine) StopServerRole() error {
+	e.abortServerRoleStart()
+
 	e.serverRoleMu.Lock()
 	runner := e.serverRoleRunner
 	listenPort := e.serverRoleListen
@@ -521,6 +731,10 @@ func (e *Engine) StopServerRole() error {
 
 	e.teardownServerRoleAdmissionAndExit()
 
+	// Контекст запущенного sing-box освобождается ПОСЛЕ остановки процесса (отмена убила бы его
+	// сама, но штатный Stop должен идти первым — он же снимает firewall-правило sing-box).
+	defer e.releaseServerRoleRunCtx()
+
 	if runner == nil {
 		return nil
 	}
@@ -533,10 +747,16 @@ func (e *Engine) StopServerRole() error {
 
 // IsServerRoleRunning отражает истинное состояние процесса sing-box роли «Выход», а не
 // отдельный локальный флаг — ни разу не созданный runner честно false, не паника.
+//
+// IsRunning зовётся ВНЕ serverRoleMu: Process.Start держит внутренний мьютекс процесса на весь срок
+// ожидания порта (до serverRoleReadyTimeout, 120 с), и IsRunning на нём ждёт. Под serverRoleMu
+// это парализовало бы и Stop, и сам Start (тот же замок) на время горячей перезагрузки, пока UI
+// опрашивает статус.
 func (e *Engine) IsServerRoleRunning() bool {
 	e.serverRoleMu.Lock()
-	defer e.serverRoleMu.Unlock()
-	return e.serverRoleRunner != nil && e.serverRoleRunner.IsRunning()
+	runner := e.serverRoleRunner
+	e.serverRoleMu.Unlock()
+	return runner != nil && runner.IsRunning()
 }
 
 // GetServerRoleStatus — снимок состояния роли «Выход» для UI. connected_clients_count
@@ -550,11 +770,13 @@ func (e *Engine) IsServerRoleRunning() bool {
 // если e.cfg.RelayServerAddr не задан).
 func (e *Engine) GetServerRoleStatus() map[string]interface{} {
 	e.serverRoleMu.Lock()
-	running := e.serverRoleRunner != nil && e.serverRoleRunner.IsRunning()
+	runner := e.serverRoleRunner
 	port := e.serverRoleListen
 	admission := e.serverRoleAdmission
 	exitClient := e.serverRoleExit
 	e.serverRoleMu.Unlock()
+	// IsRunning — вне замка, по той же причине, что в IsServerRoleRunning.
+	running := runner != nil && runner.IsRunning()
 
 	result := map[string]interface{}{"running": running, "listen_port": port}
 	if running && admission != nil {
