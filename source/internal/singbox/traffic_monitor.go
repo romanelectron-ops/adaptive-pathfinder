@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 	"github.com/apf/adaptive-pathfinder/internal/netguard"
 )
 
@@ -154,7 +156,7 @@ func (tm *TrafficMonitor) poll() {
 	client := netguard.Client(3 * time.Second)
 
 	// /connections — суммарный трафик и число активных соединений
-	resp, err := client.Get(tm.baseURL + "/connections")
+	resp, err := clashGet(client, tm.baseURL+"/connections")
 	if err != nil {
 		if tm.OnLog != nil {
 			tm.OnLog(fmt.Sprintf("traffic_monitor: /connections error: %v", err))
@@ -173,7 +175,7 @@ func (tm *TrafficMonitor) poll() {
 
 	// /traffic — мгновенная скорость (байт/с)
 	var upSpeed, downSpeed int64
-	if r2, err2 := client.Get(tm.baseURL + "/traffic"); err2 == nil {
+	if r2, err2 := clashGet(client, tm.baseURL+"/traffic"); err2 == nil {
 		defer r2.Body.Close()
 		var tResp clashTrafficResp
 		if json.NewDecoder(r2.Body).Decode(&tResp) == nil {
@@ -199,4 +201,15 @@ func (tm *TrafficMonitor) poll() {
 	if tm.OnStats != nil {
 		tm.OnStats(newStats)
 	}
+}
+
+// clashGet - GET к Clash API с секретом сессии (лот L4). Если секрет в конфиге не задан (старый
+// конфиг, серверная роль), заголовок просто игнорируется.
+func clashGet(client *http.Client, url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", localauth.BearerHeader())
+	return client.Do(req)
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/apf/adaptive-pathfinder/internal/catalog"
 	"github.com/apf/adaptive-pathfinder/internal/checker"
 	"github.com/apf/adaptive-pathfinder/internal/config"
+	"github.com/apf/adaptive-pathfinder/internal/contentage"
 	apfcrypto "github.com/apf/adaptive-pathfinder/internal/crypto"
 	"github.com/apf/adaptive-pathfinder/internal/detector"
 	"github.com/apf/adaptive-pathfinder/internal/dpi"
@@ -106,6 +107,10 @@ type Engine struct {
 	catalogRegistry *catalog.Registry // реестр провайдеров
 	catalogFetcher  *catalog.Fetcher  // агрегатор загрузки
 	adBlocker       *adblock.Blocker  // DNS блокировщик рекламы
+	// contentTracker — возраст СОДЕРЖИМОГО источников (лот L5). Один на движок: его делят
+	// реестр каталога (ручное «Обновить») и sources.Manager (фоновое обновление пула), а
+	// отметки сохраняются в cfg.Sources (persistSourceContent) и переживают перезапуск.
+	contentTracker *contentage.Tracker
 
 	// ── Sprint S6: Anti-VPN-Block ─────────────────────────────────
 	ipRepChecker  *iprep.Checker        // IP Reputation Checker (ip-api + proxycheck)
@@ -198,6 +203,9 @@ type Engine struct {
 	fileSink   *logsink.FileSink
 	// ТЗ v1.3 F3: надгробия удалённых пользователем узлов (см. nodes_manage.go).
 	tombs tombstoneSet
+	// tombsDirty - надгробия пополнились при проверке (повышение старого ID до нового, лот L2);
+	// сохраняются на диск после выхода из-под e.mu (flushTombstones).
+	tombsDirty atomic.Bool
 	// ТЗ v1.3 F4 Stage 1: обход пула с прогрессом (см. sweep.go).
 	sweepMu        sync.Mutex
 	sweepProgress  ScanProgress
@@ -514,6 +522,7 @@ func New(cfg *models.AppConfig) *Engine {
 	// B-0403 · R-6.2 (C-11): защита от IPv6-утечки означает «v6 идёт В ТУННЕЛЬ». Если пользователь
 	// её отключил — возвращаем прежнее поведение (v6 мимо туннеля), но уже осознанно с его стороны.
 	builder.SetTunIPv6(cfg.BlockIPv6Leak)
+	builder.SetHybrid(cfg.ConnectionMode == models.ModeHybrid) // лот L4: в гибриде локальный вход остаётся открытым
 	det := detector.New()
 	safety := checker.NewSafetyFilter()
 
@@ -601,6 +610,13 @@ func New(cfg *models.AppConfig) *Engine {
 		e.adBlocker.SetAllowlist(cfg.AdBlockAllowlist)
 	}
 	e.catalogFetcher = catalog.NewFetcher(e.catalogRegistry)
+	// Лот L5: учёт возраста содержимого источников + выбор пользователя из config.json
+	// (включён/выключен) применяется к реестру каталога. Без второго реестр на каждом старте
+	// возвращался бы к дефолтам, и включённый igareck «выключался» бы сам.
+	e.contentTracker = contentage.New()
+	e.seedContentTracker()
+	e.catalogRegistry.SetContentTracker(e.contentTracker)
+	e.applyConfiguredProviderStates()
 
 	// Sprint S6: инициализация Anti-VPN-Block компонентов
 	e.ipRepChecker = iprep.NewChecker(e.log)
@@ -793,6 +809,7 @@ func (e *Engine) Start() error {
 
 	// Sprint 6: регистрируем платные провайдеры из конфига
 	e.registerPaidProviders()
+	e.applyConfiguredProviderStates() // платные провайдеры регистрируются только здесь: применяем сохранённый выбор
 
 	// Sprint 6: запускаем фоновую проверку обновлений
 	if e.appUpdater != nil {
@@ -1562,6 +1579,13 @@ func (e *Engine) preferredCandidates() []preferredCand {
 			byID[n.ID] = n
 		}
 	}
+	// Последний рабочий мог быть записан под ID до миграции L2 - ищем и по старому ID.
+	var lastNode *models.Node
+	if lastID != "" {
+		if lastNode = byID[lastID]; lastNode == nil {
+			lastNode = e.resolveNodeRefLocked(models.NodeRef{ID: lastID})
+		}
+	}
 	usable := func(n *models.Node) bool {
 		return n != nil && !n.IsBlacklisted() && !n.IsChainPartner && !n.UserBanned
 	}
@@ -1597,8 +1621,8 @@ func (e *Engine) preferredCandidates() []preferredCand {
 	for _, n := range favs {
 		add(n, "избранное")
 	}
-	if lastID != "" && (pid == "" || pid == lastID) {
-		add(byID[lastID], "последний рабочий")
+	if lastNode != nil && (pid == "" || pid == lastNode.ID) {
+		add(lastNode, "последний рабочий")
 	}
 	proven := make([]*models.Node, 0, 8)
 	for _, n := range e.nodes {
@@ -5190,24 +5214,156 @@ func (e *Engine) updateSources(force bool) {
 	// N-8 (§3 DIAG_N8_PLAN.md): ожидание после KS-фикса ~1-3с (параллельная загрузка подписок).
 	t0 := time.Now()
 	defer func() { e.logDiagN8("updateSources", t0) }()
-	e.mu.RLock()
-	cfg := e.cfg
-	e.mu.RUnlock()
+	// Менеджеру — КОПИЯ конфига со своим срезом источников: он читает cfg.Sources без e.mu, а
+	// persistSourceTimestamps/persistSourceContent/syncSourceEnabled пишут в те же записи (строка
+	// ContentHash читается «рваной» — реальная гонка, доказанная -race ревью L5).
+	cfg := e.snapshotConfigForSources()
 	src := sources.New(cfg)
 	// C-7 (ТЗ v1.4, B3 #7): при активном подключении в proxy-режиме источники узлов идут
 	// ЧЕРЕЗ туннель. Раньше подписки тянулись мимо него всегда — то есть ровно в «худший
 	// день», когда пул мёртв и обновить его неоткуда, запрос шёл по заблокированному пути.
 	src.OnLog = e.log
 	src.SetTunnelProxy(e.sourceTunnelProxy)
+	src.SetContentTracker(e.contentTracker) // лот L5: возраст содержимого подписок
 	newNodes, err := src.FetchAll(e.currentCtx(), force)
 	// ТЗ v1.3 F4 Stage 0: время загрузки — в SourceConfig.LastUpdatedAt (персистентно), иначе
 	// следующий менеджер снова считает все источники «никогда не загруженными».
 	e.persistSourceTimestamps(src.LastUpdated())
+	e.persistSourceContent()
 	if err != nil || len(newNodes) == 0 {
 		return
 	}
 	// ТЗ v1.3 F3/NL-9/NL-10: единая точка слияния — надгробия, ValidateNode, дедуп внутри выдачи.
 	e.mergeFetchedNodes(newNodes, "Sources")
+}
+
+// snapshotConfigForSources — поверхностная копия конфига с ОТДЕЛЬНЫМ срезом Sources: sources.Manager
+// и харвестер читают источники без e.mu, поэтому живой указатель e.cfg им отдавать нельзя.
+func (e *Engine) snapshotConfigForSources() *models.AppConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	cp := *e.cfg
+	cp.Sources = append([]models.SourceConfig(nil), e.cfg.Sources...)
+	return &cp
+}
+
+// seedContentTracker восстанавливает отметки содержимого источников из cfg.Sources (лот L5):
+// без этого после каждого перезапуска «возраст» начинался бы заново и замороженный источник
+// снова выглядел бы только что загруженным.
+func (e *Engine) seedContentTracker() {
+	if e.contentTracker == nil {
+		return
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, s := range e.cfg.Sources {
+		e.contentTracker.Restore(s.ID, contentage.Stamp{
+			Hash:        s.ContentHash,
+			FirstSeenAt: s.ContentFirstSeenAt,
+			ChangedAt:   s.ContentChangedAt,
+			SeenAt:      s.ContentSeenAt, // 0 — неизвестно: проверка «давно не загружался» пропускается
+		})
+	}
+}
+
+// persistSourceContent переносит отметки содержимого из трекера в cfg.Sources[i] и сохраняет
+// config.json, если что-то изменилось (лот L5). Источники, которых нет в cfg.Sources (например,
+// awesome-vpn из реестра каталога), остаются только в памяти до перезапуска.
+func (e *Engine) persistSourceContent() {
+	if e.contentTracker == nil {
+		return
+	}
+	snap := e.contentTracker.Snapshot()
+	if len(snap) == 0 {
+		return
+	}
+	e.mu.Lock()
+	changed := false
+	for i := range e.cfg.Sources {
+		st, ok := snap[e.cfg.Sources[i].ID]
+		if !ok {
+			continue
+		}
+		s := &e.cfg.Sources[i]
+		if s.ContentHash != st.Hash || s.ContentFirstSeenAt != st.FirstSeenAt || s.ContentChangedAt != st.ChangedAt ||
+			s.ContentSeenAt != st.SeenAt {
+			s.ContentHash, s.ContentFirstSeenAt, s.ContentChangedAt, s.ContentSeenAt = st.Hash, st.FirstSeenAt, st.ChangedAt, st.SeenAt
+			changed = true
+		}
+	}
+	var err error
+	if changed && e.saveConfig != nil {
+		err = e.saveConfig(e.cfg)
+	}
+	e.mu.Unlock()
+	if err != nil {
+		e.log(fmt.Sprintf("Sources: ошибка сохранения отметок содержимого: %v", err))
+	}
+}
+
+// applyConfiguredProviderStates применяет к реестру каталога выбор пользователя, сохранённый
+// в cfg.Sources (лот L5): запись источника с тем же ID включает или выключает провайдера.
+// Провайдеры без записи в cfg.Sources (awesome-vpn, платные, Tor, ручной) не затрагиваются.
+func (e *Engine) applyConfiguredProviderStates() {
+	if e.catalogRegistry == nil {
+		return
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, s := range e.cfg.Sources {
+		e.catalogRegistry.SetEnabled(s.ID, s.Enabled)
+	}
+	// Провайдеры без записи в Sources (awesome-vpn, платные): выбор хранится отдельно.
+	for id, enabled := range e.cfg.CatalogProviderStates {
+		e.catalogRegistry.SetEnabled(id, enabled)
+	}
+}
+
+// syncSourceEnabled отражает выбор пользователя из каталога в cfg.Sources и сохраняет
+// config.json (лот L5). Раньше переключатель менял только реестр в памяти: после перезапуска он
+// возвращался к дефолту, а фоновое обновление пула (sources.Manager читает cfg.Sources) о
+// выключении не знало вовсе. Для встроенного необязательного источника, которого в cfg.Sources
+// ещё нет (конфиг не проходил Normalize), запись создаётся.
+func (e *Engine) syncSourceEnabled(id string, enabled bool) {
+	e.mu.Lock()
+	changed, found := false, false
+	for i := range e.cfg.Sources {
+		// Без учёта регистра и пробелов: иначе запись, написанная руками (" IGARECK-black-ss "),
+		// не находилась бы, и переключатель дописывал дубль рядом с ней.
+		if !strings.EqualFold(strings.TrimSpace(e.cfg.Sources[i].ID), id) {
+			continue
+		}
+		found = true
+		if e.cfg.Sources[i].Enabled != enabled {
+			e.cfg.Sources[i].Enabled = enabled
+			changed = true
+		}
+		break
+	}
+	if !found {
+		if o, isOptional := models.OptionalSourceByID(id); isOptional {
+			e.cfg.Sources = append(e.cfg.Sources, o.Config(enabled))
+			changed = true
+		} else {
+			// Провайдер без записи в Sources (awesome-vpn, платные): выбор переживает перезапуск
+			// через отдельную карту, иначе после старта он вернулся бы к состоянию по умолчанию.
+			if cur, ok := e.cfg.CatalogProviderStates[id]; !ok || cur != enabled {
+				if e.cfg.CatalogProviderStates == nil {
+					e.cfg.CatalogProviderStates = make(map[string]bool)
+				}
+				e.cfg.CatalogProviderStates[id] = enabled
+				changed = true
+			}
+		}
+	}
+	var err error
+	if changed && e.saveConfig != nil {
+		err = e.saveConfig(e.cfg)
+	}
+	e.mu.Unlock()
+	if err != nil {
+		e.log(fmt.Sprintf("Catalog: не удалось сохранить выбор источника %s: %v", id, err))
+	}
 }
 
 // persistSourceTimestamps переносит время последней загрузки источников в cfg.Sources[i].
@@ -5456,6 +5612,19 @@ func mergeNodeHistory(kept, dup *models.Node) {
 	}
 }
 
+// betterSurvivor — какая из двух записей одного сервера (после схлопывания вариантов fp) остаётся
+// основной: сначала принадлежащая пользователю (ручная/партнёр цепочки), затем подтверждённая
+// реальным трафиком (свежее подтверждение лучше), иначе остаётся прежняя.
+func betterSurvivor(cand, cur *models.Node) bool {
+	if cand.IsUserOwned() != cur.IsUserOwned() {
+		return cand.IsUserOwned()
+	}
+	if cand.IsProven() != cur.IsProven() {
+		return cand.IsProven()
+	}
+	return cand.IsProven() && cand.LastVerifiedAt > cur.LastVerifiedAt
+}
+
 func (e *Engine) getActiveCandidates(limit int) []*models.Node {
 	var result []*models.Node
 	for _, n := range e.nodes {
@@ -5604,7 +5773,7 @@ func (e *Engine) AddNodeFromLink(link string) error {
 			"удалён в 1.13.0) — узел не добавлен", node.Protocol)
 	}
 	node.Source = "manual"
-	e.clearTombstone(node.ID) // F3: явное добавление пользователем сильнее прошлого удаления
+	e.clearNodeTombstones(node) // F3: явное добавление пользователем сильнее прошлого удаления
 	e.mu.Lock()
 	for _, existing := range e.nodes {
 		if existing.ID != node.ID {
@@ -5621,7 +5790,11 @@ func (e *Engine) AddNodeFromLink(link string) error {
 		// параметрами (сменился Reality-ключ, SNI, ws-путь, flow), получает «успех» — а в
 		// пуле остаётся старая нерабочая конфигурация, и узел по-прежнему не подключается.
 		// Ровно та жалоба, которую эта ветка и должна закрывать (найдено ревью 2026-08-24).
+		// Лот L2: прежний отпечаток fp не теряется - уходит в запасные, а отпечаток свежей ссылки
+		// становится основным (пользователь только что подтвердил его рабочим).
+		existing.MergeFingerprints(node)
 		existing.TLS = node.TLS
+		existing.NormalizeFingerprints()
 		existing.Transport = node.Transport
 		existing.Flow = node.Flow
 		existing.AltID = node.AltID
@@ -5734,7 +5907,7 @@ func (e *Engine) AddChainPartnerFromLink(link string) (*models.Node, error) {
 		e.log(fmt.Sprintf("Вход-Выход: relay-мост для партнёра «%s» поднят на %s", node.Name, localAddr))
 	}
 
-	e.clearTombstone(node.ID) // F3: партнёра добавляет сам пользователь
+	e.clearNodeTombstones(node) // F3: партнёра добавляет сам пользователь
 	e.mu.Lock()
 	replaced := false
 	for i, existing := range e.nodes {
@@ -5807,11 +5980,15 @@ func (e *Engine) AddNodeManual(node *models.Node) error {
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("%s %s:%d", node.Protocol, node.Address, node.Port)
 	}
-	e.clearTombstone(node.ID) // F3: явное добавление пользователем сильнее прошлого удаления
+	e.clearNodeTombstones(node) // F3: явное добавление пользователем сильнее прошлого удаления
 	e.mu.Lock()
 	for _, existing := range e.nodes {
 		if existing.ID == node.ID {
+			fpGrew := existing.MergeFingerprints(node) // лот L2: новый вариант fp того же сервера не пропадает
 			e.mu.Unlock()
+			if fpGrew {
+				e.saveNodes()
+			}
 			return fmt.Errorf("already exists: %s", node.Name)
 		}
 	}
@@ -6403,11 +6580,13 @@ func (e *Engine) restorePinAndFavorites() {
 		e.mu.RUnlock()
 		return
 	}
+	remapped := false // ссылка нашла узел под другим ID (миграция схемы) - сохраним новые ID в config.json
 	resolve := func(ref models.NodeRef) (models.NodeRef, bool) {
-		for _, n := range e.nodes {
-			if n != nil && ref.Matches(n) {
-				return models.NodeRefOf(n), true
+		if n := e.resolveNodeRefLocked(ref); n != nil {
+			if n.ID != ref.ID {
+				remapped = true
 			}
+			return models.NodeRefOf(n), true
 		}
 		return ref, false
 	}
@@ -6461,6 +6640,11 @@ func (e *Engine) restorePinAndFavorites() {
 		} else {
 			e.log(fmt.Sprintf("📌 Закреплённый узел восстановлен: %s", pinName))
 		}
+	}
+	if remapped {
+		// Закреп/избранное нашли узлы по старому ID или по адресу: запоминаем новые ID, иначе тот же
+		// путь повторялся бы при каждом запуске.
+		e.persistPinAndFavorites()
 	}
 }
 
@@ -6710,20 +6894,19 @@ func (e *Engine) AddPaidProvider(entry models.PaidProviderEntry) error {
 	// Добавляем узлы в пул
 	if len(nodes) > 0 {
 		e.mu.Lock()
-		existing := make(map[string]bool, len(e.nodes))
-		for _, n := range e.nodes {
-			existing[n.ID] = true
-		}
-		added := 0
+		byID := e.nodesByIDLocked()
+		added, mergedFP := 0, 0
 		for _, n := range nodes {
-			if !existing[n.ID] && !e.isTombstoned(n.ID) { // F3: удалённое пользователем не воскрешаем
-				existing[n.ID] = true
-				e.nodes = append(e.nodes, n)
+			switch e.absorbNodeLocked(byID, n) {
+			case absorbAdded:
 				added++
+			case absorbMergedFP:
+				mergedFP++
 			}
 		}
 		e.mu.Unlock()
-		if added > 0 {
+		e.flushTombstones()
+		if added > 0 || mergedFP > 0 {
 			e.saveNodes()
 			e.log(fmt.Sprintf("Paid provider [%s]: added %d nodes", entry.Name, added))
 		}
@@ -7094,6 +7277,13 @@ func (e *Engine) PatchConfigDetailed(patch map[string]interface{}) (needsRestart
 	if dpiChanged {
 		e.applyDPIFromConfig()
 	}
+	// Лот L5: вкладка «Источники» меняет cfg.Sources целым массивом. Реестр каталога про это не
+	// знает — без синхронизации карточка в «Каталоге серверов» показывала бы прежнее состояние, а
+	// ручное «Обновить каталог» качало бы выключенный там источник.
+	if _, ok := patch["sources"]; ok {
+		e.applyConfiguredProviderStates()
+		e.purgeNodesOfDisabledOptionalSources()
+	}
 	return needsRestart, nil
 }
 
@@ -7170,6 +7360,7 @@ func (e *Engine) applyPatchLocked(patch map[string]interface{}) (needsRestart []
 	if modeChanged {
 		needTun := newCfg.ConnectionMode == models.ModeVPN || newCfg.ConnectionMode == models.ModeHybrid
 		e.builder.SetTunMode(needTun)
+		e.builder.SetHybrid(newCfg.ConnectionMode == models.ModeHybrid) // лот L4
 		// mtu=0: «умолчание sing-box» — верно для десктопа, где TUN создаёт внешний
 		// процесс sing-box сам и сам выбирает MTU (см. Builder.SetTunMTU, отличие от
 		// Android, где интерфейс создаёт VpnService.Builder и MTU обязателен явно).
@@ -7525,6 +7716,7 @@ func (e *Engine) loadNodes() error {
 	}
 	now := time.Now()
 	seen := make(map[string]*models.Node, len(nodes))
+	pos := make(map[string]int, len(nodes)) // ID -> позиция в migrated (замена выжившей записи)
 	migrated := make([]*models.Node, 0, len(nodes))
 	dropped := 0
 	nulls := 0
@@ -7571,10 +7763,22 @@ func (e *Engine) loadNodes() error {
 			// теряется вместе с отброшенной записью (max VerifiedCount/LastVerifiedAt/
 			// LastFailedAt, OR UserBanned, непустая заметка) — иначе переезд схемы ID стирал бы
 			// «проверенные» узлы (V3 к NL §4.6).
-			mergeNodeHistory(kept, n)
+			if betterSurvivor(n, kept) {
+				// Выживает n: он ручной (не должен выпасть из удержания) или это вариант, на котором
+				// сервер реально подтверждался (его fp остаётся основным, а не запасным).
+				mergeNodeHistory(n, kept)
+				n.MergeFingerprints(kept)
+				seen[n.ID] = n
+				migrated[pos[n.ID]] = n
+			} else {
+				mergeNodeHistory(kept, n)
+				kept.MergeFingerprints(n) // лот L2: варианты одного сервера с разным fp сливаются в один узел
+			}
 			dropped++
 			continue
 		}
+		n.NormalizeFingerprints()
+		pos[n.ID] = len(migrated)
 		seen[n.ID] = n
 		migrated = append(migrated, n)
 	}
@@ -8669,9 +8873,22 @@ func (e *Engine) GetCatalogStatus() []map[string]interface{} {
 	e.mu.Unlock()
 
 	status := e.catalogRegistry.Status()
+	now := time.Now()
 	for _, s := range status {
-		if id, ok := s["id"].(string); ok {
-			s["node_count"] = counts[id]
+		id, ok := s["id"].(string)
+		if !ok {
+			continue
+		}
+		s["node_count"] = counts[id]
+		// Лот L5: возраст СОДЕРЖИМОГО источника (а не время последней загрузки): content_age_text
+		// готов к показу и одинаков во всех трёх UI. Поля content_* есть только у источников с
+		// отметкой (хотя бы раз загруженных); content_age_hours = -1 — возраст неизвестен.
+		if stamp, have := e.contentTracker.Get(id); have {
+			info := contentage.Describe(stamp, now)
+			s["content_age_hours"] = info.Hours
+			s["content_age_exact"] = info.Exact
+			s["content_stale"] = info.Stale
+			s["content_age_text"] = info.Text
 		}
 	}
 	return status
@@ -8685,6 +8902,7 @@ func (e *Engine) RefreshCatalog(ctx context.Context) (int, error) {
 	}
 	e.log("Catalog: refreshing all providers...")
 	newNodes, results := e.catalogFetcher.FetchAll(ctx)
+	e.persistSourceContent() // лот L5: возраст содержимого, увиденный при ручном обновлении
 
 	// Логируем результаты по провайдерам
 	for _, r := range results {
@@ -8701,22 +8919,29 @@ func (e *Engine) RefreshCatalog(ctx context.Context) (int, error) {
 
 	// Добавляем новые узлы в пул
 	e.mu.Lock()
-	existing := make(map[string]bool, len(e.nodes))
-	for _, n := range e.nodes {
-		existing[n.ID] = true
-	}
-	added := 0
+	byID := e.nodesByIDLocked()
+	added, mergedFP, skippedTransport := 0, 0, 0
 	for _, n := range newNodes {
-		if !existing[n.ID] && !e.isTombstoned(n.ID) { // F3: удалённое пользователем не воскрешаем
-			existing[n.ID] = true
-			e.nodes = append(e.nodes, n)
+		switch e.absorbNodeLocked(byID, n) {
+		case absorbAdded:
 			added++
+		case absorbMergedFP:
+			mergedFP++
+		case absorbUnsupported:
+			skippedTransport++
 		}
 	}
+	total := len(e.nodes)
 	e.mu.Unlock()
 
+	if skippedTransport > 0 {
+		e.log(fmt.Sprintf("Catalog: пропущено %d узлов с транспортом, которого нет в этой сборке (XHTTP/mKCP)", skippedTransport))
+	}
 	if added > 0 {
-		e.log(fmt.Sprintf("Catalog: added %d new nodes (total: %d)", added, len(e.nodes)))
+		e.log(fmt.Sprintf("Catalog: added %d new nodes (total: %d)", added, total))
+	}
+	e.flushTombstones()
+	if added > 0 || mergedFP > 0 {
 		e.saveNodes()
 	}
 	return added, nil
@@ -8730,8 +8955,63 @@ func (e *Engine) SetProviderEnabled(id string, enabled bool) bool {
 	ok := e.catalogRegistry.SetEnabled(id, enabled)
 	if ok {
 		e.log(fmt.Sprintf("Catalog: provider %s enabled=%v", id, enabled))
+		// Лот L5: выбор переживает перезапуск и управляет фоновым обновлением пула.
+		e.syncSourceEnabled(id, enabled)
+		// Выключили встроенный необязательный источник — его узлы больше не должны выбираться:
+		// пользователь отключает чужие бесплатные узлы именно из недоверия к ним.
+		if _, optional := models.OptionalSourceByID(id); optional && !enabled {
+			e.purgeNodesOfDisabledOptionalSources()
+		}
 	}
 	return ok
+}
+
+// purgeNodesOfDisabledOptionalSources убирает из пула узлы встроенных необязательных источников
+// (igareck), которые сейчас ВЫКЛЮЧЕНЫ (лот L5). Остаются: активный узел (не рвём соединение),
+// закреплённый, избранный и принадлежащие пользователю (ручные, партнёр цепочки). Если тот же
+// узел отдаёт другой включённый источник, следующее обновление вернёт его под тем источником.
+// Возвращает число убранных узлов.
+func (e *Engine) purgeNodesOfDisabledOptionalSources() int {
+	e.mu.RLock()
+	enabled := make(map[string]bool, len(e.cfg.Sources))
+	for _, s := range e.cfg.Sources {
+		enabled[s.ID] = s.Enabled
+	}
+	e.mu.RUnlock()
+	disabled := make(map[string]bool)
+	for _, o := range models.OptionalSources() {
+		if !enabled[o.ID] {
+			disabled[o.ID] = true
+		}
+	}
+
+	// GetState берёт только stateMu и возвращает копию — безопасно до захвата e.mu.
+	activeID := ""
+	if st := e.GetState(); st != nil && st.ActiveNode != nil {
+		activeID = st.ActiveNode.ID
+	}
+	pinned := e.PinnedNodeID()
+
+	e.mu.Lock()
+	kept := make([]*models.Node, 0, len(e.nodes))
+	removed := 0
+	for _, n := range e.nodes {
+		if n != nil && disabled[n.Source] && n.ID != activeID && n.ID != pinned &&
+			!n.IsUserOwned() && !e.IsFavorite(n.ID) {
+			removed++
+			continue
+		}
+		kept = append(kept, n)
+	}
+	if removed > 0 {
+		e.nodes = kept
+	}
+	e.mu.Unlock()
+	if removed > 0 {
+		e.log(fmt.Sprintf("Catalog: убрано %d узл. выключенных источников igareck из пула", removed))
+		e.saveNodes()
+	}
+	return removed
 }
 
 // ─── Sprint S4: AdBlock API ───────────────────────────────────────────────────

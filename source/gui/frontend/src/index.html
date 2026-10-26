@@ -1141,7 +1141,7 @@
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">SOCKS5 порт<i class="help-ico" data-help="Локальный порт, на котором APF слушает SOCKS5 (HTTP — на следующем после него). Меняйте только если порт 10808 занят другой программой на этой машине. Допустимо 1024–65530. После смены APF нужно перезапустить.">?</i></div>
+            <div class="setting-label">SOCKS5 порт<i class="help-ico" data-help="Локальный порт, на котором APF слушает SOCKS5 (HTTP — на следующем после него). Меняйте только если порт 10808 занят другой программой на этой машине. Допустимо 1024–65530. После смены APF нужно перезапустить. В режиме VPN этот вход защищён паролем сессии: вручную указывать его программам не нужно, их трафик идёт через VPN сам. Для ручной настройки программ выберите режим «Прокси» или «Гибрид».">?</i></div>
             <div class="setting-sub">Локальный порт прокси-сервера · <b>нужен перезапуск APF</b></div>
           </div>
           <input class="setting-input" id="set-port" type="number" value="10808" onchange="saveListenPort(this)"/>
@@ -2014,26 +2014,26 @@ function renderNodes() {
       '<td><span class="pill ' + pillCls + '">' + pillLbl + '</span></td>' +
       '<td style="font-size:14px" title="' + esc(vb.title) + '">' + vb.icon + '</td>' +
       '<td style="white-space:nowrap">' +
-        '<button class="btn btn-ghost" title="Подключиться именно к этому узлу (на один раз, без закрепления)" onclick="connectToNode(\'' + esc(n.id) + '\')">▶</button> ' +
-        '<button class="btn btn-ghost" title="' + (isPinned ? 'Открепить' : 'Закрепить — авто-выбор всегда будет предпочитать этот узел') + '" onclick="togglePinNode(\'' + esc(n.id) + '\', ' + isPinned + ')">' + (isPinned ? '📌' : '📍') + '</button> ' +
+        '<button class="btn btn-ghost" title="Подключиться именно к этому узлу (на один раз, без закрепления)" data-id="' + esc(n.id) + '" onclick="connectToNode(this.dataset.id)">▶</button> ' +
+        '<button class="btn btn-ghost" title="' + (isPinned ? 'Открепить' : 'Закрепить — авто-выбор всегда будет предпочитать этот узел') + '" data-id="' + esc(n.id) + '" onclick="togglePinNode(this.dataset.id, ' + isPinned + ')">' + (isPinned ? '📌' : '📍') + '</button> ' +
         // W3: системный фаворит показывает 🤖 (клик — promotion в sticky user, AddFavorite) +
         // отдельную ✕ (прямое удаление обоих классов, RemoveFavorite) — звезда сама по себе
         // системный фаворит не снимает, см. window.toggleFavorite ниже.
         (isSystemFav
-          ? '<button class="btn btn-ghost" title="Добавлен автоматически по трафик-пробе — нажмите, чтобы закрепить как избранное (иначе снимется, если перестанет давать трафик)" onclick="toggleFavorite(\'' + esc(n.id) + '\', true, true)">🤖</button> ' +
-            '<button class="btn btn-ghost" title="Убрать из избранного (автоматического)" onclick="removeSystemFavorite(\'' + esc(n.id) + '\')">✕</button> '
-          : '<button class="btn btn-ghost" title="' + (isFav ? 'Убрать из избранного' : 'В избранное — авто-выбор предпочтёт его после закреплённого') + '" onclick="toggleFavorite(\'' + esc(n.id) + '\', ' + isFav + ', false)">' + (isFav ? '⭐' : '☆') + '</button> '
+          ? '<button class="btn btn-ghost" title="Добавлен автоматически по трафик-пробе — нажмите, чтобы закрепить как избранное (иначе снимется, если перестанет давать трафик)" data-id="' + esc(n.id) + '" onclick="toggleFavorite(this.dataset.id, true, true)">🤖</button> ' +
+            '<button class="btn btn-ghost" title="Убрать из избранного (автоматического)" data-id="' + esc(n.id) + '" onclick="removeSystemFavorite(this.dataset.id)">✕</button> '
+          : '<button class="btn btn-ghost" title="' + (isFav ? 'Убрать из избранного' : 'В избранное — авто-выбор предпочтёт его после закреплённого') + '" data-id="' + esc(n.id) + '" onclick="toggleFavorite(this.dataset.id, ' + isFav + ', false)">' + (isFav ? '⭐' : '☆') + '</button> '
         ) +
         // ТЗ v1.3 F3: правка / бан / удаление — раньше список был read-only на всех платформах.
-        '<button class="btn btn-ghost" title="Переименовать / заметка" onclick="renameNode(\'' + esc(n.id) + '\')">✏</button> ' +
+        '<button class="btn btn-ghost" title="Переименовать / заметка" data-id="' + esc(n.id) + '" onclick="renameNode(this.dataset.id)">✏</button> ' +
         // U-15 (ТЗ v1.4, п.в): App.ResetNodeStats был готов и протестирован (engine.go
         // ResetNodeStats — «дать узлу второй шанс с чистого листа», TCP-метрики/сбои/
         // чёрный список/история подтверждений на 0, бан и заметка НЕ трогаются), но
         // невызываем ни из одного onclick — решение: подключить, а не удалять (реальная
         // рабочая функциональность, не заглушка).
-        '<button class="btn btn-ghost" title="Сбросить статистику узла (задержка, сбои, история подтверждений — второй шанс с чистого листа; бан и заметка не трогаются)" onclick="resetNodeStats(\'' + esc(n.id) + '\')">🔄</button> ' +
-        '<button class="btn btn-ghost" title="' + (isBanned ? 'Снять бан' : 'Забанить — никогда не выбирать автоматически') + '" onclick="toggleBanNode(\'' + esc(n.id) + '\', ' + isBanned + ')">' + (isBanned ? '♻' : '🚫') + '</button> ' +
-        '<button class="btn btn-ghost" title="Удалить из списка (подписки не вернут; отменяется кнопкой «Восстановить удалённые»)" onclick="removeNode(\'' + esc(n.id) + '\')">🗑</button>' +
+        '<button class="btn btn-ghost" title="Сбросить статистику узла (задержка, сбои, история подтверждений — второй шанс с чистого листа; бан и заметка не трогаются)" data-id="' + esc(n.id) + '" onclick="resetNodeStats(this.dataset.id)">🔄</button> ' +
+        '<button class="btn btn-ghost" title="' + (isBanned ? 'Снять бан' : 'Забанить — никогда не выбирать автоматически') + '" data-id="' + esc(n.id) + '" onclick="toggleBanNode(this.dataset.id, ' + isBanned + ')">' + (isBanned ? '♻' : '🚫') + '</button> ' +
+        '<button class="btn btn-ghost" title="Удалить из списка (подписки не вернут; отменяется кнопкой «Восстановить удалённые»)" data-id="' + esc(n.id) + '" onclick="removeNode(this.dataset.id)">🗑</button>' +
       '</td>' +
     '</tr>'
   }).join('')
@@ -2419,7 +2419,7 @@ function renderPaidProviders(cfg) {
           '<div class="source-name">' + esc(p.name) + '</div>' +
           '<div class="source-url">' + esc(p.type) + (p.url ? ' · ' + esc(p.url) : '') + '</div>' +
         '</div>' +
-        '<button class="btn btn-ghost" style="margin-left:auto;padding:4px 10px" onclick="doRemovePaidProvider(\'' + esc(p.id) + '\')">Удалить</button>' +
+        '<button class="btn btn-ghost" style="margin-left:auto;padding:4px 10px" data-id="' + esc(p.id) + '" onclick="doRemovePaidProvider(this.dataset.id)">Удалить</button>' +
       '</div>' +
     '</div>'
   ).join('')
@@ -3752,11 +3752,15 @@ function renderCatalogList(providers) {
   }
   el.innerHTML = providers.map(p =>
     '<div class="setting-row">' +
-      '<div>' +
+      '<div style="padding-right:12px">' +
         '<div class="setting-label">' + esc(p.name || p.id) + (p.free ? ' · бесплатный' : '') + '</div>' +
-        '<div class="setting-sub">' + (p.node_count || 0) + ' узлов · доверие ' + (p.trust_score != null ? p.trust_score : '—') + '</div>' +
+        '<div class="setting-sub">' + (p.node_count || 0) + ' узлов' + (p.optional ? '' : ' · доверие ' + (p.trust_score != null ? p.trust_score : '—')) + '</div>' +
+        // Лот L5: возраст СОДЕРЖИМОГО (не время последней загрузки) и пояснение для встроенных
+        // источников, выключенных по умолчанию (igareck). Тексты готовит движок (GetCatalogStatus).
+        (p.content_age_text ? '<div class="setting-sub">' + (p.content_stale ? '⚠ ' : '') + esc(p.content_age_text) + '</div>' : '') +
+        (p.note ? '<div class="setting-sub">' + esc(p.note) + '</div>' : '') +
       '</div>' +
-      '<div class="toggle ' + (p.enabled ? 'on' : '') + '" onclick="toggleCatalogProvider(\'' + esc(p.id) + '\', this)"></div>' +
+      '<div class="toggle ' + (p.enabled ? 'on' : '') + '" data-id="' + esc(p.id) + '" onclick="toggleCatalogProvider(this.dataset.id, this)"></div>' +
     '</div>'
   ).join('')
 }
@@ -3815,7 +3819,7 @@ function renderAdBlockAllowlist(list) {
   el.innerHTML = list.map(d =>
     '<div class="setting-row">' +
       '<div class="setting-label" style="font-family:var(--font-mono);font-size:12px">' + esc(d) + '</div>' +
-      '<button class="btn btn-ghost" onclick="removeAdBlockAllow(\'' + esc(d) + '\')">Убрать</button>' +
+      '<button class="btn btn-ghost" data-id="' + esc(d) + '" onclick="removeAdBlockAllow(this.dataset.id)">Убрать</button>' +
     '</div>'
   ).join('')
 }
@@ -3929,10 +3933,10 @@ function renderBypassList(rules) {
         '<div class="setting-sub">' + (r.domains ? r.domains.map(esc).join(', ') : '') + '</div>' +
       '</div>' +
       '<div style="display:flex;align-items:center;gap:8px">' +
-        '<div class="toggle ' + (r.enabled ? 'on' : '') + '" onclick="toggleBypassRule(\'' + esc(r.id) + '\', this)"></div>' +
+        '<div class="toggle ' + (r.enabled ? 'on' : '') + '" data-id="' + esc(r.id) + '" onclick="toggleBypassRule(this.dataset.id, this)"></div>' +
         (r.builtin ? '' :
-          '<button class="btn btn-ghost" onclick="startEditBypassDomain(\'' + esc(r.id) + '\')">✎</button>' +
-          '<button class="btn btn-ghost" onclick="removeBypassDomain(\'' + esc(r.id) + '\')">✕</button>') +
+          '<button class="btn btn-ghost" data-id="' + esc(r.id) + '" onclick="startEditBypassDomain(this.dataset.id)">✎</button>' +
+          '<button class="btn btn-ghost" data-id="' + esc(r.id) + '" onclick="removeBypassDomain(this.dataset.id)">✕</button>') +
       '</div>' +
     '</div>'
   ).join('')

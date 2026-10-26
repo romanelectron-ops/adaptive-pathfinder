@@ -60,7 +60,9 @@ func TestInit_SecondCallReportsReady(t *testing.T) {
 		globalMu.Unlock()
 	})
 
-	if err := Init("D:\\APF-Stand\\phone\\nonexistent", ""); err != "" {
+	// Путь не используется (повторный Init возвращается раньше), но если контракт изменится,
+	// тест не должен писать за пределы временного каталога (диск D: для записи закрыт).
+	if err := Init(filepath.Join(t.TempDir(), "nonexistent"), ""); err != "" {
 		t.Fatalf("повторный Init вернул %q, ожидалась пустая строка", err)
 	}
 	if getEngine() != stub {
@@ -377,6 +379,10 @@ func TestCatalogStatus_AfterInit(t *testing.T) {
 	}
 	globalMu.Lock()
 	globalEngine = engine.New(androidConfig())
+	// Лот L5: переключатель провайдера теперь сохраняет выбор в config.json. Без этой строки
+	// тест писал бы поверх НАСТОЯЩЕГО config.json хоста (см. комментарий в TestAdBlockStatus_AfterInit:
+	// на Windows config.DataDir() ничем не перенаправляется) — пишем во временный каталог.
+	globalEngine.SetConfigSavePath(filepath.Join(t.TempDir(), "config.json"))
 	globalMu.Unlock()
 	t.Cleanup(func() {
 		globalMu.Lock()
@@ -400,6 +406,28 @@ func TestCatalogStatus_AfterInit(t *testing.T) {
 	}
 	if got := SetCatalogProviderEnabled("no-such-provider", true); got == "" {
 		t.Error("SetCatalogProviderEnabled с несуществующим ID вернул успех")
+	}
+
+	// Лот L5: источники igareck видны в каталоге Android (экран перебирает JSON без правок
+	// Kotlin), выключены по умолчанию и включаются тем же мостом.
+	if !strings.Contains(status, "igareck-black-vless") || !strings.Contains(status, `"optional":true`) {
+		t.Errorf("в каталоге нет необязательных источников igareck с пометкой optional: %s", status)
+	}
+	if got := SetCatalogProviderEnabled("igareck-black-vless", true); got != "" {
+		t.Errorf("включение igareck-black-vless = %q, ожидался успех", got)
+	}
+	var rows []map[string]interface{}
+	if err := json.Unmarshal([]byte(GetCatalogStatusJSON()), &rows); err != nil {
+		t.Fatalf("статус каталога не разбирается: %v", err)
+	}
+	var enabled interface{} = "нет строки"
+	for _, r := range rows {
+		if r["id"] == "igareck-black-vless" {
+			enabled = r["enabled"]
+		}
+	}
+	if enabled != true {
+		t.Errorf("после включения igareck-black-vless статус enabled = %v", enabled)
 	}
 }
 

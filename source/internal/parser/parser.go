@@ -169,7 +169,7 @@ func parseVLESS(raw string) (*models.Node, error) {
 	}
 
 	// Transport
-	netType := q.Get("type")
+	netType := canonicalTransportType(q.Get("type"))
 	if netType != "" && netType != "tcp" {
 		node.Transport = &models.TransportConfig{
 			Type: netType,
@@ -199,6 +199,7 @@ func parseVLESS(raw string) (*models.Node, error) {
 	}
 
 	node.ID = generateID(node)
+	node.NormalizeFingerprints() // лот L2: собственный отпечаток — первый в списке запасных
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("VLESS %s:%d", node.Address, node.Port)
 	}
@@ -268,15 +269,16 @@ func parseVMess(raw string) (*models.Node, error) {
 			Fingerprint: cfg.FP,
 		}
 	}
-	if cfg.Net != "" && cfg.Net != "tcp" {
+	if net := canonicalTransportType(cfg.Net); net != "" && net != "tcp" {
 		node.Transport = &models.TransportConfig{
-			Type: cfg.Net,
+			Type: net,
 			Path: cfg.Path,
 			Host: cfg.Host,
 		}
 	}
 
 	node.ID = generateID(node)
+	node.NormalizeFingerprints() // лот L2: собственный отпечаток — первый в списке запасных
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("VMess %s:%d", node.Address, node.Port)
 	}
@@ -405,6 +407,7 @@ func parseShadowsocks(raw string) (*models.Node, error) {
 	}
 
 	node.ID = generateID(node)
+	node.NormalizeFingerprints() // лот L2: собственный отпечаток — первый в списке запасных
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("SS %s:%d", node.Address, node.Port)
 	}
@@ -439,7 +442,7 @@ func parseTrojan(raw string) (*models.Node, error) {
 		Fingerprint: q.Get("fp"),
 	}
 
-	netType := q.Get("type")
+	netType := canonicalTransportType(q.Get("type"))
 	if netType != "" && netType != "tcp" {
 		node.Transport = &models.TransportConfig{
 			Type: netType,
@@ -449,6 +452,7 @@ func parseTrojan(raw string) (*models.Node, error) {
 	}
 
 	node.ID = generateID(node)
+	node.NormalizeFingerprints() // лот L2: собственный отпечаток — первый в списке запасных
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("Trojan %s:%d", node.Address, node.Port)
 	}
@@ -518,6 +522,7 @@ func parseWireGuard(raw string) (*models.Node, error) {
 	}
 
 	node.ID = generateID(node)
+	node.NormalizeFingerprints() // лот L2: собственный отпечаток — первый в списке запасных
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("WG %s:%d", node.Address, node.Port)
 	}
@@ -627,7 +632,7 @@ func clashBuildNode(f map[string]string) *models.Node {
 			}
 			node.TLS = &models.TLSConfig{Enabled: true, ServerName: sni}
 		}
-		if net := f["network"]; net != "" && net != "tcp" {
+		if net := canonicalTransportType(f["network"]); net != "" && net != "tcp" {
 			node.Transport = &models.TransportConfig{
 				Type: net,
 				Path: f["ws-path"],
@@ -643,7 +648,7 @@ func clashBuildNode(f map[string]string) *models.Node {
 			sni = server
 		}
 		node.TLS = &models.TLSConfig{Enabled: true, ServerName: sni}
-		if net := f["network"]; net != "" && net != "tcp" {
+		if net := canonicalTransportType(f["network"]); net != "" && net != "tcp" {
 			node.Transport = &models.TransportConfig{
 				Type: net,
 				Path: f["ws-path"],
@@ -665,7 +670,7 @@ func clashBuildNode(f map[string]string) *models.Node {
 			}
 			node.TLS = &models.TLSConfig{Enabled: true, ServerName: sni}
 		}
-		if net := f["network"]; net != "" && net != "tcp" {
+		if net := canonicalTransportType(f["network"]); net != "" && net != "tcp" {
 			node.Transport = &models.TransportConfig{
 				Type: net,
 				Path: f["ws-path"],
@@ -677,6 +682,7 @@ func clashBuildNode(f map[string]string) *models.Node {
 	}
 
 	node.ID = generateID(node)
+	node.NormalizeFingerprints() // лот L2: собственный отпечаток — первый в списке запасных
 	return node
 }
 
@@ -733,7 +739,12 @@ func generateID(node *models.Node) string {
 	// рабочую ссылку с новым ключом, попадал в ветку дубликата — и в пуле оставался узел со
 	// СТАРЫМ, нерабочим ключом (найдено ревью 2026-08-24).
 	if t := node.TLS; t != nil {
-		h.Write([]byte(fmt.Sprintf("|tls:%v|%s|%s", t.Enabled, t.ServerName, t.Fingerprint)))
+		// Лот L2: uTLS-отпечаток (fp) в идентичность НЕ входит. Издатели раздают один и тот же
+		// сервер в 5-7 вариантах отпечатка намеренно, как запас; с fp в хеше пул считал их разными
+		// узлами. Отпечатки копятся в Node.FPCandidates, ID у всех вариантов один.
+		// Хвостовой "|" оставлен нарочно: при пустом fp строка побайтно совпадает со старой, поэтому ID у
+		// TLS-узлов без отпечатка НЕ меняются - миграция касается только узлов, где fp был.
+		h.Write([]byte(fmt.Sprintf("|tls:%v|%s|", t.Enabled, t.ServerName)))
 		if r := t.Reality; r != nil {
 			h.Write([]byte(fmt.Sprintf("|reality:%s|%s", r.PublicKey, r.ShortID)))
 		}
@@ -749,6 +760,96 @@ func generateID(node *models.Node) string {
 // поэтому ID детерминирован и совпадает для одинаковых узлов независимо от способа ввода.
 func GenerateNodeID(node *models.Node) string {
 	return generateID(node)
+}
+
+// LegacyNodeID — ID узла по схеме ДО лота L2 (отпечаток fp входил в хеш). Нужен там, где ID
+// хранятся отдельно от узла и не могут быть пересчитаны: надгробия удалённых пользователем
+// узлов. Без проверки по старому ID подписка вернула бы удалённый узел под новым ID.
+func LegacyNodeID(node *models.Node) string {
+	fp := ""
+	if node.TLS != nil {
+		fp = node.TLS.Fingerprint
+	}
+	return legacyID(node, fp)
+}
+
+// legacyID - ID по схеме до лота L2 для заданного отпечатка. Узел НЕ меняется: раньше перебор
+// отпечатков временно подменял node.TLS.Fingerprint, и любой параллельный читатель узла видел чужой fp.
+func legacyID(node *models.Node, fp string) string {
+	h := sha256.New()
+	h.Write([]byte(fmt.Sprintf("%s:%s:%d", node.Protocol, node.Address, node.Port)))
+	h.Write([]byte(fmt.Sprintf("|%s|%s|%s|%s|%d",
+		node.UUID, node.Password, node.Method, node.Flow, node.AltID)))
+	if t := node.TLS; t != nil {
+		h.Write([]byte(fmt.Sprintf("|tls:%v|%s|%s", t.Enabled, t.ServerName, fp)))
+		if r := t.Reality; r != nil {
+			h.Write([]byte(fmt.Sprintf("|reality:%s|%s", r.PublicKey, r.ShortID)))
+		}
+	}
+	if tr := node.Transport; tr != nil {
+		h.Write([]byte(fmt.Sprintf("|tr:%s|%s|%s", tr.Type, tr.Path, tr.Host)))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
+// standardUTLSFingerprints - имена отпечатков uTLS, которые встречаются в ссылках (sing-box).
+var standardUTLSFingerprints = []string{
+	"chrome", "firefox", "edge", "safari", "360", "qq", "ios", "android", "random", "randomized",
+}
+
+// LegacyNodeIDs возвращает ID узла по схеме ДО лота L2 для его собственного fp, для всех увиденных
+// отпечатков (FPCandidates) и для всех стандартных. Нужен там, где ID хранятся отдельно от узла:
+// надгробия удалённых узлов, закреплённый узел и избранное. Пользователь удалил или закрепил узел,
+// когда ID включал ТОТ fp, под которым узел тогда лежал в пуле, а подписка теперь может раздать другой
+// вариант того же сервера - без перебора отпечатков ссылка не нашла бы узел. Узел не изменяется.
+func LegacyNodeIDs(node *models.Node) []string {
+	if node == nil || node.TLS == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	try := func(fp string) {
+		if id := legacyID(node, fp); !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	try(node.TLS.Fingerprint)
+	for _, fp := range node.FPCandidates {
+		try(fp)
+	}
+	for _, fp := range standardUTLSFingerprints {
+		try(fp)
+	}
+	return out
+}
+
+// NodeHasLegacyID - id совпадает с одним из ID узла по схеме до лота L2 (см. LegacyNodeIDs).
+func NodeHasLegacyID(node *models.Node, id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, x := range LegacyNodeIDs(node) {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalTransportType приводит имя транспорта из ссылки к тому, что знает ядро (лот L1):
+// `raw` — новое имя обычного TCP в Xray (в ссылках igareck их десятки), `h2` — старое имя
+// транспорта «http» (HTTP/2) в V2Ray/Clash. Остальное — как есть, в нижнем регистре; неизвестные
+// транспорты (xhttp, kcp...) отвергает ValidateNode с понятной причиной, а не парсер.
+func canonicalTransportType(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
+	switch t {
+	case "raw":
+		return "tcp"
+	case "h2":
+		return "http"
+	}
+	return t
 }
 
 // ── F-12 (T-12): диспетчер импорта каталога ───────────────────────────────────

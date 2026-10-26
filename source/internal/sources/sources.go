@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apf/adaptive-pathfinder/internal/contentage"
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 	"github.com/apf/adaptive-pathfinder/internal/models"
 	"github.com/apf/adaptive-pathfinder/internal/netguard"
 	"github.com/apf/adaptive-pathfinder/internal/parser"
@@ -41,6 +43,10 @@ type Manager struct {
 	// socksDial — точка подмены ДЛЯ ТЕСТОВ (в бою — dialSOCKS5). Поднимать настоящий SOCKS в
 	// испытании нечем, а поведение «через туннель / напрямую» проверить обязательно.
 	socksDial func(ctx context.Context, proxyAddr, targetAddr string, timeout time.Duration) (net.Conn, error)
+
+	// tracker — учёт возраста СОДЕРЖИМОГО подписок (лот L5, internal/contentage); nil — не ведётся.
+	// Менеджер пересоздаётся на каждое обновление, поэтому трекер общий с движком и живёт дольше.
+	tracker *contentage.Tracker
 }
 
 // New создаёт новый Manager
@@ -57,6 +63,10 @@ func New(cfg *models.AppConfig) *Manager {
 // SetTunnelProxy задаёт поставщика адреса локального SOCKS движка (C-7). nil или ответ
 // ("", false) означает «тянуть напрямую».
 func (m *Manager) SetTunnelProxy(p func() (string, bool)) { m.tunnelProxy = p }
+
+// SetContentTracker подключает учёт возраста содержимого подписок (лот L5); nil отключает.
+// Вызывать до FetchAll.
+func (m *Manager) SetContentTracker(t *contentage.Tracker) { m.tracker = t }
 
 func (m *Manager) log(msg string) {
 	if m.OnLog != nil {
@@ -249,6 +259,10 @@ func (m *Manager) fetchSubscription(ctx context.Context, src models.SourceConfig
 	if err != nil {
 		return nil, err
 	}
+
+	// Лот L5: возраст СОДЕРЖИМОГО — по телу подписки до разбора. Только подписки: у страницы
+	// Telegram-канала и «сырого» HTML тело меняется от счётчиков просмотров и вёрстки.
+	m.tracker.Observe(src.ID, body, time.Now())
 
 	nodes, err := parser.ParseSubscription(body)
 	if err != nil {
@@ -575,19 +589,11 @@ func dialSOCKS5(ctx context.Context, proxyAddr, targetAddr string, timeout time.
 	}
 	_ = conn.SetDeadline(deadline)
 
-	// 1) Приветствие: VER=5, NMETHODS=1, METHOD=0x00 (no-auth).
-	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+	// 1) Приветствие: предлагаем "без пароля" и "логин/пароль"; выбирает сервер (лот L4: в режиме VPN
+	// локальный вход защищён паролем сессии, в остальных режимах открыт).
+	if err := localauth.Greet(conn); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("socks5: write greeting: %w", err)
-	}
-	rep := make([]byte, 2)
-	if _, err := io.ReadFull(conn, rep); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("socks5: read method reply: %w", err)
-	}
-	if rep[0] != 0x05 || rep[1] != 0x00 {
-		conn.Close()
-		return nil, fmt.Errorf("socks5: no-auth rejected (ver=%d method=%d)", rep[0], rep[1])
+		return nil, fmt.Errorf("socks5: %w", err)
 	}
 
 	// 2) CONNECT: VER, CMD=1, RSV=0, ATYP, ADDR, PORT.

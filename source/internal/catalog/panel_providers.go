@@ -1,4 +1,4 @@
-﻿package catalog
+package catalog
 
 import (
 	"context"
@@ -335,6 +335,15 @@ func marzbanInboundToNode(ib marzbanInbound, proto models.Protocol, host, panelN
 			Type: "grpc",
 			Path: ib.Path,
 		}
+	case "", "tcp", "raw", "none":
+		// обычный TCP: отдельный транспорт не нужен
+	case "h2", "http":
+		n.Transport = &models.TransportConfig{Type: "http", Path: ib.Path, Host: ib.Host}
+	default:
+		// xhttp/kcp/quic и прочее, чего нет в ядре этой сборки: тип сохраняется как есть, и узел
+		// отвергается проверкой с понятной причиной. Раньше такой узел молча превращался в «голый tcp»
+		// и никогда не подключался (лот L1).
+		n.Transport = &models.TransportConfig{Type: strings.ToLower(ib.Network), Path: ib.Path, Host: ib.Host}
 	}
 
 	// TLS / Reality.
@@ -454,6 +463,14 @@ func threeXInboundToNode(ib threeXInbound, host, panelName, sourceTag string) *m
 		if stream.GRPC != nil {
 			node.Transport.Path = stream.GRPC.ServiceName
 		}
+	case "", "tcp", "raw":
+		// обычный TCP: отдельный транспорт не нужен
+	case "h2", "http":
+		node.Transport = &models.TransportConfig{Type: "http"}
+	default:
+		// xhttp/kcp/quic и прочее, чего нет в ядре этой сборки: узел отвергается проверкой с понятной
+		// причиной, а не превращается молча в «голый tcp» (лот L1).
+		node.Transport = &models.TransportConfig{Type: strings.ToLower(stream.Network)}
 	}
 
 	// TLS / Reality security.

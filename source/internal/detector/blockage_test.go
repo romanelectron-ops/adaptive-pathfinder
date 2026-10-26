@@ -17,6 +17,7 @@ func TestBlockageType_String(t *testing.T) {
 		{BlockageSNI, "sni"},
 		{BlockageDeep, "deep_dpi"},
 		{BlockageComplete, "complete"},
+		{BlockageWhitelist, "whitelist"},
 		{BlockageType(99), "unknown"},
 	}
 	for _, tt := range tests {
@@ -92,7 +93,7 @@ func TestSelectStrategy_Complete(t *testing.T) {
 func TestSelectStrategy_AllHaveRequiredFields(t *testing.T) {
 	blockageTypes := []BlockageType{
 		BlockageNone, BlockageDNS, BlockageIP,
-		BlockageSNI, BlockageDeep, BlockageComplete,
+		BlockageSNI, BlockageDeep, BlockageComplete, BlockageWhitelist,
 	}
 	for _, bt := range blockageTypes {
 		s := SelectStrategy(bt)
@@ -116,7 +117,7 @@ func TestBuildReport_ViaSelectStrategy(t *testing.T) {
 	d := New()
 	blockageTypes := []BlockageType{
 		BlockageNone, BlockageDNS, BlockageIP,
-		BlockageSNI, BlockageDeep, BlockageComplete,
+		BlockageSNI, BlockageDeep, BlockageComplete, BlockageWhitelist,
 	}
 	for _, bt := range blockageTypes {
 		s := SelectStrategy(bt)

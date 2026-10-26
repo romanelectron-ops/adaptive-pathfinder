@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 	"github.com/apf/adaptive-pathfinder/internal/models"
 	"github.com/apf/adaptive-pathfinder/internal/netguard"
 )
@@ -382,19 +383,11 @@ func dialViaSOCKS5(ctx context.Context, proxyAddr, targetAddr string, timeout ti
 	}
 	_ = conn.SetDeadline(deadline)
 
-	// 1) Приветствие: VER=5, NMETHODS=1, METHOD=0x00 (no-auth).
-	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+	// 1) Приветствие: предлагаем "без пароля" и "логин/пароль"; выбирает сервер (лот L4: в режиме VPN
+	// локальный вход защищён паролем сессии, в остальных режимах открыт).
+	if err := localauth.Greet(conn); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("socks5: write greeting: %w", err)
-	}
-	rep := make([]byte, 2)
-	if _, err := io.ReadFull(conn, rep); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("socks5: read method reply: %w", err)
-	}
-	if rep[0] != 0x05 || rep[1] != 0x00 {
-		conn.Close()
-		return nil, fmt.Errorf("socks5: no-auth rejected (ver=%d method=%d)", rep[0], rep[1])
+		return nil, fmt.Errorf("socks5: %w", err)
 	}
 
 	// 2) Запрос CONNECT: VER, CMD=1, RSV=0, ATYP, ADDR, PORT.

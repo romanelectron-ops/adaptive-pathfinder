@@ -3340,7 +3340,7 @@ button,input,select{font-family:inherit;outline:none}
     <div class="panel-hd">Сеть</div>
     <div class="panel-bd">
       <div class="srow">
-        <div class="srow-l"><div class="srow-title">SOCKS5 порт<i class="help-ico" tabindex="0" role="button" aria-label="Пояснение" onclick="showHelp(this)" onkeydown="if(event.key==='Enter')showHelp(this)" data-help="Локальный порт, на котором APF слушает SOCKS5 (HTTP — на следующем после него). Меняйте только если порт 10808 занят другой программой на этой машине. Допустимо 1024–65530. После смены APF нужно перезапустить.">?</i></div><div class="srow-sub">127.0.0.1:порт в настройках браузера</div></div>
+        <div class="srow-l"><div class="srow-title">SOCKS5 порт<i class="help-ico" tabindex="0" role="button" aria-label="Пояснение" onclick="showHelp(this)" onkeydown="if(event.key==='Enter')showHelp(this)" data-help="Локальный порт, на котором APF слушает SOCKS5 (HTTP — на следующем после него). Меняйте только если порт 10808 занят другой программой на этой машине. Допустимо 1024–65530. После смены APF нужно перезапустить. В режиме VPN этот вход защищён паролем сессии: вручную указывать его программам не нужно, их трафик идёт через VPN сам. Для ручной настройки программ выберите режим «Прокси» или «Гибрид».">?</i></div><div class="srow-sub">127.0.0.1:порт в настройках браузера</div></div>
         <input class="sinp" id="s-port" type="number" value="10808">
       </div>
       <div class="srow">
@@ -3483,7 +3483,7 @@ button,input,select{font-family:inherit;outline:none}
 <!-- ══ HELP ══ -->
 <div class="page" id="page-help">
   <div class="panel"><div class="panel-hd">Быстрый старт</div><div class="panel-bd"><div style="font-size:13px;color:var(--t2);line-height:2"><b style="color:var(--t1)">1.</b> Нажмите <b style="color:var(--ac)">Подключить</b> — APF найдёт лучший сервер (~30 сек)<br><b style="color:var(--t1)">2.</b> Откройте Instagram, Telegram, ChatGPT — должны работать<br><b style="color:var(--t1)">3.</b> Если не открывается — <b style="color:var(--ac)">Сменить сервер</b><br><b style="color:var(--t1)">4.</b> Полное обновление серверов — <b style="color:var(--ac)">Полный сброс</b></div></div></div>
-  <div class="panel"><div class="panel-hd">Настройка браузера</div><div class="panel-bd"><div style="font-size:13px;color:var(--t2);line-height:1.9">SOCKS5: <span style="font-family:monospace;color:var(--ac)">127.0.0.1:10808</span><br><b>Firefox:</b> Настройки → Сеть → SOCKS-прокси<br><b>Chrome:</b> Расширение Proxy SwitchyOmega</div></div></div>
+  <div class="panel"><div class="panel-hd">Настройка браузера</div><div class="panel-bd"><div style="font-size:13px;color:var(--t2);line-height:1.9">SOCKS5: <span style="font-family:monospace;color:var(--ac)">127.0.0.1:10808</span><br><span style="font-size:12px">Только в режимах «Прокси» и «Гибрид». В режиме VPN вход защищён паролем сессии, браузер настраивать не нужно.</span><br><b>Firefox:</b> Настройки → Сеть → SOCKS-прокси<br><b>Chrome:</b> Расширение Proxy SwitchyOmega</div></div></div>
   <div class="panel"><div class="panel-hd">Интернет не работает после APF?</div><div class="panel-bd"><div style="font-size:13px;color:var(--t2);line-height:1.9;margin-bottom:12px">Нажмите кнопку ниже — удалит все изменения APF в сетевых настройках и восстановит DNS.</div><div class="btns" style="margin-bottom:10px"><button class="btn btn-warn" onclick="doResetNet()">⚠ Восстановить сетевые настройки</button><button class="btn btn-pri" onclick="startRecoveryWizard()">🧭 Запустить мастер восстановления</button></div><div id="recovery-wizard-box" class="info-box info" style="display:none"><div style="font-size:13px;font-weight:600;margin-bottom:8px">Recovery Wizard</div><div id="recovery-wizard-status" style="font-size:12px;line-height:1.7;color:var(--t1)"></div><div class="btns" style="margin-top:10px;margin-bottom:8px"><button class="btn btn-sm" id="recovery-retry-btn" onclick="runRecoveryConnectivityCheck()" style="display:none">↻ Повторить проверку</button><button class="btn btn-sm btn-pri" id="recovery-safe-btn" onclick="applySafeSettingsAndConnect()" style="display:none">✓ Безопасные настройки и подключить</button></div><div id="recovery-checklist" style="display:none;font-size:12px;line-height:1.7;color:var(--t2)"></div></div></div></div>
   <div class="panel"><div class="panel-hd">🔒 Privacy Wizard</div><div class="panel-bd"><div style="font-size:13px;color:var(--t2);line-height:1.9;margin-bottom:12px">Быстрый мастер настройки приватности — IPv6 Guard, WebRTC Guard, DNS-мониторинг и AdBlock за 4 шага. Занимает ~2 минуты.</div><div class="btns"><button class="btn btn-pri" onclick="startPrivacyWizard()">🔒 Запустить Privacy Wizard</button></div></div></div>
 </div>
@@ -4078,9 +4078,9 @@ function renderNodes(){
     // пробы) — оба бейджа кликабельны и сразу снимают избранное (favorite:false), не дожидаясь
     // звезды в колонке действий ниже (та для системного класса теперь ПОВЫШАЕТ, а не снимает).
     if(n.id&&userFavoriteIdSet.has(n.id)){
-      marks+='<span title="Избранное (добавлено вами). Нажмите, чтобы убрать" style="cursor:pointer" onclick="doFavoriteNode(\''+esc(n.id)+'\',false)">⭐</span> ';
+      marks+='<span title="Избранное (добавлено вами). Нажмите, чтобы убрать" style="cursor:pointer" data-id="'+esc(n.id)+'" onclick="doFavoriteNode(this.dataset.id,false)">⭐</span> ';
     }else if(n.id&&systemFavoriteIdSet.has(n.id)){
-      marks+='<span title="Добавлен автоматически по трафик-пробе — снимется, если перестанет давать трафик. Нажмите, чтобы убрать сейчас" style="cursor:pointer" onclick="doFavoriteNode(\''+esc(n.id)+'\',false)">🤖</span> ';
+      marks+='<span title="Добавлен автоматически по трафик-пробе — снимется, если перестанет давать трафик. Нажмите, чтобы убрать сейчас" style="cursor:pointer" data-id="'+esc(n.id)+'" onclick="doFavoriteNode(this.dataset.id,false)">🤖</span> ';
     }
     if(n.user_banned)marks+='<span title="В чёрном списке">🚫</span> ';
     const noteAttr=n.user_note?' title="'+esc(n.user_note)+'"':'';
@@ -4108,12 +4108,12 @@ function renderNodes(){
     // через "Удалённые" единой кнопкой «повторно из источника» — но остаются в списке removed_ids
     // и снимаются тем же «Восстановить все» (RestoreRemovedNodes не различает источник).
     const actions=n.id?(
-      '<button class="btn btn-sm'+(pinned?' btn-pri':'')+'" title="'+(pinned?'Открепить':'Закрепить')+'" onclick="doPinNode(\''+nid+'\','+(!pinned)+')">📌</button>'+
-      '<button class="btn btn-sm'+(fav?' btn-pri':'')+'" title="'+favTitle+'" onclick="doFavoriteNode(\''+nid+'\','+favNextVal+')">⭐</button>'+
-      '<button class="btn btn-sm'+(banned?' btn-red':'')+'" title="'+(banned?'Разбанить':'Забанить')+'" onclick="doBanNode(\''+nid+'\','+(!banned)+')">🚫</button>'+
-      '<button class="btn btn-sm btn-gr" title="Подключиться именно к этому узлу" onclick="doConnectOnce(\''+nid+'\')">▶</button>'+
-      '<button class="btn btn-sm" title="Изменить название/заметку" onclick="doEditNode(\''+nid+'\')">✎</button>'+
-      '<button class="btn btn-sm btn-red" title="Удалить узел" onclick="doRemoveNode(\''+nid+'\')">🗑</button>'
+      '<button class="btn btn-sm'+(pinned?' btn-pri':'')+'" title="'+(pinned?'Открепить':'Закрепить')+'" data-id="'+nid+'" onclick="doPinNode(this.dataset.id,'+(!pinned)+')">📌</button>'+
+      '<button class="btn btn-sm'+(fav?' btn-pri':'')+'" title="'+favTitle+'" data-id="'+nid+'" onclick="doFavoriteNode(this.dataset.id,'+favNextVal+')">⭐</button>'+
+      '<button class="btn btn-sm'+(banned?' btn-red':'')+'" title="'+(banned?'Разбанить':'Забанить')+'" data-id="'+nid+'" onclick="doBanNode(this.dataset.id,'+(!banned)+')">🚫</button>'+
+      '<button class="btn btn-sm btn-gr" title="Подключиться именно к этому узлу" data-id="'+nid+'" onclick="doConnectOnce(this.dataset.id)">▶</button>'+
+      '<button class="btn btn-sm" title="Изменить название/заметку" data-id="'+nid+'" onclick="doEditNode(this.dataset.id)">✎</button>'+
+      '<button class="btn btn-sm btn-red" title="Удалить узел" data-id="'+nid+'" onclick="doRemoveNode(this.dataset.id)">🗑</button>'
     ):'—';
     // C-21-ui (ТЗ v1.4, §2.5 UI_CONTRACT): метка каталога (из имени) vs фактический выход
     // (LastVerifiedCountry, заполняется движком/L1b-ENG2 после успешной проверки через узел).
@@ -4943,8 +4943,8 @@ async function loadDiagnostics(){
         pe.textContent='';
       }
     }
-    const types={'none':'Нет','dns':'DNS','ip':'IP','sni':'SNI (ТСПУ)','deep_dpi':'Глубокая DPI','complete':'Полная'};
-    const colors={'none':'var(--gr)','dns':'var(--ye)','ip':'var(--ye)','sni':'var(--or)','deep_dpi':'var(--re)','complete':'var(--re)'};
+    const types={'none':'Нет','dns':'DNS','ip':'IP','sni':'SNI (ТСПУ)','deep_dpi':'Глубокая DPI','complete':'Полная','whitelist':'Белые списки'};
+    const colors={'none':'var(--gr)','dns':'var(--ye)','ip':'var(--ye)','sni':'var(--or)','deep_dpi':'var(--re)','complete':'var(--re)','whitelist':'var(--or)'};
     const bt=d.blockage_type||'none';
     const el=document.getElementById('diag-type');
     if(el){el.textContent=types[bt]||bt;el.style.color=colors[bt]||'var(--t2)';}
@@ -5390,19 +5390,35 @@ function renderCatalog(){
     const total=p.node_count||0;
     const ok=p.enabled;
     const trust=Math.round((p.trust_score||0)*100);
-    const updated=p.last_updated?new Date(p.last_updated).toLocaleString('ru'):'\u2014';
+    // \u041d\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0430\u0432\u0448\u0438\u0439\u0441\u044f \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a \u043f\u0440\u0438\u0445\u043e\u0434\u0438\u0442 \u0441 \u043d\u0443\u043b\u0435\u0432\u043e\u0439 \u0434\u0430\u0442\u043e\u0439 (0001-01-01) \u2014 \u044d\u0442\u043e \u00ab\u043d\u0435\u0442 \u0434\u0430\u043d\u043d\u044b\u0445\u00bb, \u0430 \u043d\u0435 \u0434\u0430\u0442\u0430.
+    const updated=(p.last_updated&&!String(p.last_updated).startsWith('0001'))?new Date(p.last_updated).toLocaleString('ru'):'\u2014';
+    // \u041b\u043e\u0442 L5: \u00ab\u0414\u043e\u0432\u0435\u0440\u0438\u0435\u00bb \u0441\u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044f \u043b\u0438\u0448\u044c \u043e\u0442 \u0447\u0438\u0441\u043b\u0430 \u0443\u0437\u043b\u043e\u0432, \u0430 \u00ab\u0421\u043a\u043e\u0440\u043e\u0441\u0442\u044c\u00bb \u2014 \u043e\u0442 \u043f\u0440\u043e\u0442\u043e\u043a\u043e\u043b\u043e\u0432; \u0440\u044f\u0434\u043e\u043c \u0441
+    // \u043f\u0440\u0435\u0434\u0443\u043f\u0440\u0435\u0436\u0434\u0435\u043d\u0438\u0435\u043c \u043e \u0447\u0443\u0436\u0438\u0445 \u0431\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u044b\u0445 \u0443\u0437\u043b\u0430\u0445 (\u0432\u0441\u0442\u0440\u043e\u0435\u043d\u043d\u044b\u0435 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438, \u0432\u044b\u043a\u043b\u044e\u0447\u0435\u043d\u043d\u044b\u0435 \u043f\u043e \u0443\u043c\u043e\u043b\u0447\u0430\u043d\u0438\u044e)
+    // \u043e\u043d\u0438 \u0432\u044b\u0433\u043b\u044f\u0434\u0435\u043b\u0438 \u0431\u044b \u043a\u0430\u043a \u0440\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0438\u044f, \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u0443 \u0442\u0430\u043a\u0438\u0445 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u043e\u0432 \u0438\u0445 \u043d\u0435\u0442.
+    const stats=p.optional
+      ? '\u0422\u0438\u043f: <b>'+esc(p.type)+'</b> &nbsp;&nbsp; \u0423\u0437\u043b\u043e\u0432: <b>'+total+'</b><br>\u041e\u0431\u043d.: '+updated
+      : '\u0422\u0438\u043f: <b>'+esc(p.type)+'</b> &nbsp;&nbsp; \u0414\u043e\u0432\u0435\u0440\u0438\u0435: <b>'+trust+'%</b> &nbsp;&nbsp; \u0423\u0437\u043b\u043e\u0432: <b>'+total+'</b><br>'+
+        '\u0421\u043a\u043e\u0440\u043e\u0441\u0442\u044c: '+esc(p.speed_class||'\u2014')+' &nbsp;&nbsp; \u041e\u0431\u043d.: '+updated;
+    // \u0412\u043e\u0437\u0440\u0430\u0441\u0442 \u0421\u041e\u0414\u0415\u0420\u0416\u0418\u041c\u041e\u0413\u041e (\u043d\u0435 \u0432\u0440\u0435\u043c\u044f \u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0435\u0439 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438) \u0438 \u043f\u043e\u044f\u0441\u043d\u0435\u043d\u0438\u0435 \u2014 \u0442\u0435\u043a\u0441\u0442\u044b \u0433\u043e\u0442\u043e\u0432\u0438\u0442 \u0434\u0432\u0438\u0436\u043e\u043a
+    // (GetCatalogStatus), \u0437\u0434\u0435\u0441\u044c \u0442\u043e\u043b\u044c\u043a\u043e \u043f\u043e\u043a\u0430\u0437.
+    const age=p.content_age_text
+      ? '<br><span style="color:'+(p.content_stale?'var(--ye)':'var(--t2)')+'">'+(p.content_stale?'\u26a0 ':'')+esc(p.content_age_text)+'</span>'
+      : '';
+    const note=p.note?'<br><span>'+esc(p.note)+'</span>':'';
     return '<div class="panel" style="margin-bottom:10px"><div class="panel-hd">'+
       '<span>'+esc(p.name)+'</span>'+
       '<div style="display:flex;align-items:center;gap:8px">'+
       '<span class="pill '+(ok?'p-ok':'p-unk')+'">'+(ok?'\u0410\u043a\u0442':'\u0412\u044b\u043a\u043b')+'</span>'+
-      '<button class="btn btn-sm" onclick="toggleProvider(\''+esc(p.id)+'\','+!ok+')">'+(ok?'\u0412\u044b\u043a\u043b':'\u0412\u043a\u043b')+'</button>'+
+      '<button class="btn btn-sm" data-id="'+esc(p.id)+'" data-enabled="'+!ok+'" onclick="toggleProviderBtn(this)">'+(ok?'\u0412\u044b\u043a\u043b':'\u0412\u043a\u043b')+'</button>'+
       '</div></div>'+
       '<div class="panel-bd" style="padding:10px 16px;font-size:12px;color:var(--t2)">'+
-      '\u0422\u0438\u043f: <b>'+esc(p.type)+'</b> &nbsp;&nbsp; \u0414\u043e\u0432\u0435\u0440\u0438\u0435: <b>'+trust+'%</b> &nbsp;&nbsp; \u0423\u0437\u043b\u043e\u0432: <b>'+total+'</b><br>'+
-      '\u0421\u043a\u043e\u0440\u043e\u0441\u0442\u044c: '+esc(p.speed_class||'\u2014')+' &nbsp;&nbsp; \u041e\u0431\u043d.: '+updated+
+      stats+age+note+
       '</div></div>';
   }).join('');
 }
+// ID провайдера не склеивается в JS-строку обработчика (esc() даёт &#39;, а парсер HTML раскодирует его
+// обратно в апостроф ДО выполнения JS): берём его из data-id.
+function toggleProviderBtn(btn){toggleProvider(btn.dataset.id,btn.dataset.enabled==='true');}
 async function toggleProvider(id,enabled){
   await fetch(B+'/api/catalog/provider',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,enabled})});
   await loadCatalog();
@@ -5459,7 +5475,7 @@ function renderAdBlock(){
   if(al){
     const list=s.allowlist||[];
     if(!list.length){al.innerHTML='<span style="color:var(--t3)">\u041f\u0443\u0441\u0442\u043e</span>';return;}
-    al.innerHTML=list.map(d=>'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--bd)"><span>'+esc(d)+'</span><button class="btn btn-red btn-sm" onclick="removeAllowlist(\''+esc(d)+'\')">&times;</button></div>').join('');
+    al.innerHTML=list.map(d=>'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--bd)"><span>'+esc(d)+'</span><button class="btn btn-red btn-sm" data-id="'+esc(d)+'" onclick="removeAllowlist(this.dataset.id)">&times;</button></div>').join('');
   }
 }
 async function setAdBlockProfile(p){
@@ -5738,9 +5754,9 @@ function renderBypassRules(rules){
       '<br><span style="font-size:11px;color:var(--t3)">'+(r.notes?esc(r.notes):'')+'</span>'+
       '</div>'+
       '<div style="display:flex;gap:6px">'+
-      (!r.builtin?'<button class="btn btn-sm" onclick="editBypassRule(\'' + esc(r.id) + '\')">✎</button>':'')+
-      '<button class="btn btn-sm" onclick="toggleBypassRule(\'' + esc(r.id) + '\',' + !ok + ')">'+(ok?'Выкл':'Вкл')+'</button>'+
-      (!r.builtin?'<button class="btn btn-sm btn-red" onclick="removeBypassRule(\'' + esc(r.id) + '\')">&#10005;</button>':'')+
+      (!r.builtin?'<button class="btn btn-sm" data-id="' + esc(r.id) + '" onclick="editBypassRule(this.dataset.id)">✎</button>':'')+
+      '<button class="btn btn-sm" data-id="' + esc(r.id) + '" onclick="toggleBypassRule(this.dataset.id,' + !ok + ')">'+(ok?'Выкл':'Вкл')+'</button>'+
+      (!r.builtin?'<button class="btn btn-sm btn-red" data-id="' + esc(r.id) + '" onclick="removeBypassRule(this.dataset.id)">&#10005;</button>':'')+
       '</div></div>';
   }).join('');
 }

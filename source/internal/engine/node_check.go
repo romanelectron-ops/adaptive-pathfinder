@@ -645,6 +645,16 @@ func (e *Engine) probeOne(ctx context.Context, node *models.Node, slot, socksPor
 	return e.probeNodeReal(pctx, node, slot, socksPort)
 }
 
+// newProbeBuilder — билдер конфига проб-инстанса: SOCKS-only (без TUN), но с паролем сессии на
+// локальных входах (лот L4). Без него инстанс на предсказуемом порту открывал бы любому приложению
+// устройства прокси через непроверенный узел пула; единственный клиент пробы - dialViaSOCKS5, он
+// пароль сессии умеет (localauth.Greet).
+func newProbeBuilder(socksPort int) *singbox.Builder {
+	b := singbox.NewBuilder(socksPort, false)
+	b.SetForceLocalAuth(true)
+	return b
+}
+
 // probeNodeReal — БОЕВОЙ пробер (используется, только когда e.probeFn == nil). Поднимает SOCKS-only
 // инстанс sing-box для узла, делает реальный HTTP GET наружу, гасит инстанс. Гейт netguard.UnderTest
 // — defense-in-depth: даже при nil-шве под `go test` сюда попасть нельзя без реального egress (AC-2).
@@ -657,7 +667,7 @@ func (e *Engine) probeNodeReal(ctx context.Context, node *models.Node, slot, soc
 	}
 
 	// SOCKS-only конфиг (tunMode=false ⇒ без TUN). Никакого нового билдера — тот же BuildSingle.
-	b := singbox.NewBuilder(socksPort, false)
+	b := newProbeBuilder(socksPort)
 	cfg, err := b.BuildSingle(node)
 	if err != nil {
 		return 0, "", "", fmt.Errorf("build probe config: %w", err)

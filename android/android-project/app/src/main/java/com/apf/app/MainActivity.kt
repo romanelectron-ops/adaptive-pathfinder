@@ -1259,9 +1259,17 @@ class MainActivity : AppCompatActivity() {
                 gravity = android.view.Gravity.CENTER_VERTICAL
                 setPadding(0, 20, 0, 20)
             }
+            // Лот L5: возраст СОДЕРЖИМОГО источника (не время последней загрузки) и пояснение у
+            // встроенных источников, выключенных по умолчанию (igareck). Тексты готовит Go-слой
+            // (Engine.GetCatalogStatus), здесь только показ; пустые поля строку не меняют.
+            val contentAgeText = p.optString("content_age_text")
+            val noteText = p.optString("note")
             row.addView(TextView(this).apply {
                 text = "${p.optString("name", id)} (${p.optString("type")}) — " +
-                    "${p.optInt("node_count")} ${pluralNodes(p.optInt("node_count"))}"
+                    "${p.optInt("node_count")} ${pluralNodes(p.optInt("node_count"))}" +
+                    (if (contentAgeText.isEmpty()) "" else
+                        "\n" + (if (p.optBoolean("content_stale")) "⚠ " else "") + contentAgeText) +
+                    (if (noteText.isEmpty()) "" else "\n" + noteText)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
             val sw = Switch(this)
@@ -4002,8 +4010,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Двухбуквенный код страны из МЕТКИ узла ("" — метка его не содержит). */
+    /**
+     * Двухбуквенный код страны из МЕТКИ узла ("" — метка его не содержит). Правило то же, что
+     * `models.Node.CatalogCountry` на Go-стороне: сначала первый флаг-эмодзи (пара региональных
+     * индикаторов U+1F1E6..U+1F1FF), и только если это код страны ISO 3166-1 («🇪🇺»/«🇺🇳» страной
+     * не считаются); без флага — пара заглавных латинских букв.
+     */
     private fun catalogCountryOf(name: String): String {
+        val cps = name.codePoints().toArray()
+        var k = 0
+        while (k + 1 < cps.size) {
+            val a = cps[k]
+            val b = cps[k + 1]
+            if (a in 0x1F1E6..0x1F1FF && b in 0x1F1E6..0x1F1FF) {
+                val code = String(charArrayOf('A' + (a - 0x1F1E6), 'A' + (b - 0x1F1E6)))
+                return if (code == "XK" || java.util.Locale.getISOCountries().contains(code)) code else ""
+            }
+            k++
+        }
         var i = 0
         while (i < name.length && !(name[i] in 'A'..'Z')) i++
         if (i + 1 >= name.length) return ""

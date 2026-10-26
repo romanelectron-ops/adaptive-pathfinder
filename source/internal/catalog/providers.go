@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apf/adaptive-pathfinder/internal/contentage"
 	"github.com/apf/adaptive-pathfinder/internal/models"
 	"github.com/apf/adaptive-pathfinder/internal/netguard"
 	"github.com/apf/adaptive-pathfinder/internal/parser"
@@ -53,10 +54,39 @@ type FreeSubscriptionProvider struct {
 	id      string
 	name    string
 	url     string
-	enabled bool
+	enabled bool         // под mu: переключатель из UI и обновление каталога идут из разных горутин
 	mu      sync.RWMutex // B-11: meta мутируется в Fetch (параллельно в FetchAll) и читается в Meta()
 	meta    ProviderMeta
 	client  *http.Client
+
+	// Лот L5: необязательный встроенный источник (выключен по умолчанию) и пояснение для карточки.
+	optional bool
+	note     string
+	// tracker — учёт возраста СОДЕРЖИМОГО (internal/contentage); nil — не ведётся.
+	tracker *contentage.Tracker
+}
+
+// NewOptionalFreeProvider создаёт провайдера для встроенного необязательного источника
+// (models.OptionalSources): он ВЫКЛЮЧЕН, пока пользователь не включит его в каталоге.
+// ID совпадает с записью в cfg.Sources — так узлы, загруженные любым из двух путей
+// (фоновое обновление источников и ручное «Обновить каталог»), считаются одним источником.
+func NewOptionalFreeProvider(o models.OptionalSource) *FreeSubscriptionProvider {
+	p := NewFreeProvider(o.ID, o.Name, o.URL)
+	p.enabled = false
+	p.optional = true
+	p.note = o.Note
+	return p
+}
+
+// OptionalFreeProviders — выключенные по умолчанию встроенные источники (igareck).
+// Отдельно от DefaultFreeProviders: тот возвращает только включённые.
+func OptionalFreeProviders() []*FreeSubscriptionProvider {
+	src := models.OptionalSources()
+	out := make([]*FreeSubscriptionProvider, 0, len(src))
+	for _, o := range src {
+		out = append(out, NewOptionalFreeProvider(o))
+	}
+	return out
 }
 
 func NewFreeProvider(id, name, url string) *FreeSubscriptionProvider {
@@ -78,11 +108,33 @@ func NewFreeProvider(id, name, url string) *FreeSubscriptionProvider {
 	}
 }
 
-func (p *FreeSubscriptionProvider) ID() string        { return p.id }
-func (p *FreeSubscriptionProvider) Name() string      { return p.name }
-func (p *FreeSubscriptionProvider) Type() string      { return "free" }
-func (p *FreeSubscriptionProvider) IsEnabled() bool   { return p.enabled }
-func (p *FreeSubscriptionProvider) SetEnabled(v bool) { p.enabled = v }
+func (p *FreeSubscriptionProvider) ID() string   { return p.id }
+func (p *FreeSubscriptionProvider) Name() string { return p.name }
+func (p *FreeSubscriptionProvider) Type() string { return "free" }
+func (p *FreeSubscriptionProvider) IsEnabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.enabled
+}
+func (p *FreeSubscriptionProvider) SetEnabled(v bool) {
+	p.mu.Lock()
+	p.enabled = v
+	p.mu.Unlock()
+}
+
+// Optional — источник встроенный, но выключен до решения пользователя (лот L5).
+func (p *FreeSubscriptionProvider) Optional() bool { return p.optional }
+
+// Note — пояснение для карточки источника ("" — нет).
+func (p *FreeSubscriptionProvider) Note() string { return p.note }
+
+// SetContentTracker подключает учёт возраста содержимого; nil отключает.
+func (p *FreeSubscriptionProvider) SetContentTracker(t *contentage.Tracker) {
+	p.mu.Lock()
+	p.tracker = t
+	p.mu.Unlock()
+}
+
 func (p *FreeSubscriptionProvider) Meta() ProviderMeta {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -110,6 +162,13 @@ func (p *FreeSubscriptionProvider) Fetch(ctx context.Context) ([]*models.Node, e
 	if err != nil {
 		return nil, fmt.Errorf("read: %w", err)
 	}
+
+	// Лот L5: возраст СОДЕРЖИМОГО считаем по телу, как оно пришло, до разбора: заморозка
+	// источника видна по неизменному набору строк, а не по коду 200.
+	p.mu.RLock()
+	tracker := p.tracker
+	p.mu.RUnlock()
+	tracker.Observe(p.id, body, time.Now())
 
 	content := string(body)
 	if decoded, err := tryBase64Decode(content); err == nil {
@@ -290,6 +349,10 @@ func NewRegistry() *Registry {
 	for _, p := range DefaultFreeProviders() {
 		r.Register(p)
 	}
+	// Лот L5: встроенные, но выключенные до решения пользователя (игнорируются Enabled()/FetchAll).
+	for _, p := range OptionalFreeProviders() {
+		r.Register(p)
+	}
 	r.Register(NewTorBridgeProvider())
 	r.Register(NewManualProvider())
 	return r
@@ -362,7 +425,7 @@ func (r *Registry) Status() []map[string]interface{} {
 	out := make([]map[string]interface{}, 0)
 	for _, p := range r.All() {
 		m := p.Meta()
-		out = append(out, map[string]interface{}{
+		row := map[string]interface{}{
 			"id":           p.ID(),
 			"name":         p.Name(),
 			"type":         p.Type(),
@@ -373,9 +436,28 @@ func (r *Registry) Status() []map[string]interface{} {
 			"free":         m.Free,
 			"region":       m.Region,
 			"speed_class":  m.SpeedClass,
-		})
+		}
+		// Лот L5: пометка «встроенный, выключен до решения пользователя» и пояснение —
+		// только у тех провайдеров, которые это умеют; остальные поля прежние.
+		if o, ok := p.(interface{ Optional() bool }); ok && o.Optional() {
+			row["optional"] = true
+		}
+		if n, ok := p.(interface{ Note() string }); ok && n.Note() != "" {
+			row["note"] = n.Note()
+		}
+		out = append(out, row)
 	}
 	return out
+}
+
+// SetContentTracker подключает учёт возраста содержимого всем провайдерам, которые его умеют
+// (сейчас — подписки FreeSubscriptionProvider); остальные пропускаются.
+func (r *Registry) SetContentTracker(t *contentage.Tracker) {
+	for _, p := range r.All() {
+		if s, ok := p.(interface{ SetContentTracker(*contentage.Tracker) }); ok {
+			s.SetContentTracker(t)
+		}
+	}
 }
 
 // SetEnabled включает/выключает провайдера по ID

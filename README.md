@@ -27,12 +27,14 @@
 - Автоматический подбор узла: сбор узлов из источников, обход пула по TCP, **проба
   реальным трафиком** (HTTP-запрос через сам узел), ранжирование, избранное.
 - Автопереключение при сбое, циклический поиск, режим цепочки и многохоповые цепочки.
+- Источники узлов выбираете вы в «Каталоге серверов»; сторонние публичные списки (например, igareck) **выключены по умолчанию**. Один сервер в разных вариантах отпечатка TLS считается одним узлом. Распознавание «белых списков» мобильного интернета — эвристика, живьём пока не проверена.
 - Аварийные резервы (Tor — если установлен).
 
 **Защита**
 - **Kill Switch**: на Windows — правила фаервола через отдельную службу; на Android — через
   системный «Всегда включённый VPN» и «Блокировать соединения без VPN».
 - Защита от утечек DNS и IPv6, подсказки по WebRTC.
+- В режиме VPN локальные входы SOCKS5/HTTP и API статистики закрыты паролем сессии (в режимах «прокси» и «гибрид» вход остаётся открытым — он нужен браузеру и приложениям).
 - Раздельное туннелирование: домены напрямую, приложения вне VPN.
 - Блокировка рекламы и трекеров на уровне DNS.
 
@@ -122,5 +124,6 @@ to via a link; a small **relay** (`apf-relay`) helps when the exit is behind NAT
   currently issues VLESS+Reality links.
 - Proxy mode and full-device VPN (TUN) mode, Kill Switch, DNS/IPv6 leak protection,
   split tunnelling, DNS ad-blocking.
+- Node sources are chosen by you in the server catalog; third-party public lists (e.g. igareck) are **off by default**. In VPN mode the local SOCKS5/HTTP inbounds and the stats API are protected by a per-session password.
 - Status: **experimental**. Downloads: see *Releases*. Build instructions: `docs/BUILD.md`.
 - License: **GPL-3.0-or-later** (it embeds sing-box, GPL-3.0). Not affiliated with sing-box.

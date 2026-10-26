@@ -65,6 +65,13 @@ func (e *Engine) HarvestNow(ctx context.Context) (*HarvestResult, error) {
 
 	e.mu.RLock()
 	cfg := e.cfg
+	if cfg != nil {
+		// Лот L5: источники читаются без e.mu, а persistSource*/syncSourceEnabled пишут в те же
+		// записи — харвестеру отдаём копию со своим срезом Sources, не живой указатель.
+		cp := *cfg
+		cp.Sources = append([]models.SourceConfig(nil), cfg.Sources...)
+		cfg = &cp
+	}
 	// Снимок пула для санитайзера секретов харвестера (SecretsFromNodes): секреты УЖЕ известных
 	// узлов не должны утечь в модель/лог. В v1.4 модели нет, но передаём для корректности.
 	known := make([]*models.Node, len(e.nodes))

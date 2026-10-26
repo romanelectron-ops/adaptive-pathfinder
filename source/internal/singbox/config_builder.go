@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/apf/adaptive-pathfinder/internal/config"
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 	"github.com/apf/adaptive-pathfinder/internal/models"
 )
 
@@ -64,6 +65,9 @@ type ExperimentalConfig struct {
 // локально: этот API не аутентифицирован, наружу его выставлять нельзя.
 type ClashAPIConfig struct {
 	ExternalController string `json:"external_controller"`
+	// Secret - секрет Clash API (лот L4): без него любое приложение на устройстве могло читать
+	// список соединений. Клиентские конфигурации APF всегда задают его (localauth.ClashSecret).
+	Secret string `json:"secret,omitempty"`
 }
 
 // CacheFileConfig — путь файла кэша sing-box (TLS session resumption, fakeip и т.д.).
@@ -125,9 +129,17 @@ type Inbound struct {
 	Tag        string `json:"tag"`
 	Listen     string `json:"listen,omitempty"`      // только для socks/http; у tun не эмитится
 	ListenPort int    `json:"listen_port,omitempty"` // только для socks/http
+	// Users - логин/пароль входа (только socks/http, лот L4); пусто - вход открыт.
+	Users []InboundUser `json:"users,omitempty"`
 	// sing-box 1.11+: поля TUN инлайнятся в inbound (нет вложенного "tun").
 	// Встраиваем указателем: non-nil → поля промоутятся в JSON; nil → отсутствуют.
 	*TunOptions
+}
+
+// InboundUser - учётная запись входа socks/http (sing-box users[]).
+type InboundUser struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type TunOptions struct {
@@ -315,14 +327,16 @@ type RouteRule struct {
 
 // Builder строит sing-box конфигурации
 type Builder struct {
-	socksPort    int
-	tunMode      bool
-	tunMTU       int    // Э-4 · Ш-3: MTU реального TUN-интерфейса (0 — умолчание sing-box)
-	tunIPv6      bool   // B-0403 · R-6.2: выдавать ли TUN адрес IPv6 (иначе v6 идёт мимо туннеля)
-	blockIPv6    bool   // задача #18: форсировать ipv4_only на клиентские DNS-запросы (см. SetBlockIPv6)
-	pinnedServer string // B-0403 · R-8: заранее резолвнутый IP узла входа (см. SetServerIP)
-	logLevel     string
-	bypass       []string
+	socksPort      int
+	tunMode        bool
+	hybrid         bool   // режим "гибрид" (TUN + системный прокси): локальный вход обязан остаться открытым
+	forceLocalAuth bool   // пароль сессии на локальных входах в любом режиме (проб-инстансы проверки узлов)
+	tunMTU         int    // Э-4 · Ш-3: MTU реального TUN-интерфейса (0 — умолчание sing-box)
+	tunIPv6        bool   // B-0403 · R-6.2: выдавать ли TUN адрес IPv6 (иначе v6 идёт мимо туннеля)
+	blockIPv6      bool   // задача #18: форсировать ipv4_only на клиентские DNS-запросы (см. SetBlockIPv6)
+	pinnedServer   string // B-0403 · R-8: заранее резолвнутый IP узла входа (см. SetServerIP)
+	logLevel       string
+	bypass         []string
 	// directProcesses — имена процессов, чей трафик идёт мимо туннеля (см. SetDirectProcesses).
 	directProcesses []string
 	// racePinned — заранее резолвнутые IP участников гонки (см. SetRacePinnedIPs).
@@ -374,6 +388,18 @@ func (b *Builder) SetBlockIPv6(v bool) { b.blockIPv6 = v }
 // жёстко ставит ModeProxy), а переключение на VPN происходит поверх уже живого движка
 // вызовом StartTun — не пересозданием Engine с нуля.
 func (b *Builder) SetTunMode(v bool) { b.tunMode = v }
+
+// SetHybrid отмечает режим "гибрид" (TUN + системный прокси): в нём локальные socks/http-входы
+// используют приложения пользователя, поэтому пароль сессии на них не ставится (лот L4).
+func (b *Builder) SetHybrid(v bool) { b.hybrid = v }
+
+// SetForceLocalAuth включает пароль сессии на локальных входах независимо от режима: проб-инстансы
+// проверки узлов (SOCKS-only, tunMode=false) не должны быть открытым прокси для чужих приложений.
+func (b *Builder) SetForceLocalAuth(v bool) { b.forceLocalAuth = v }
+
+// LocalAuthEnabled - защищены ли локальные socks/http-входы паролем сессии: только когда трафик
+// пользователя идёт через TUN, а входы нужны одному APF (режим VPN).
+func (b *Builder) LocalAuthEnabled() bool { return b.forceLocalAuth || (b.tunMode && !b.hybrid) }
 
 // TunMode — текущее состояние (для тестов и диагностики).
 func (b *Builder) TunMode() bool { return b.tunMode }
@@ -1266,6 +1292,7 @@ func (b *Builder) baseConfig(entryTag string) *Config {
 			// объявлял clash_api вовсе (GetTrafficStats тихо возвращал нули/ошибки).
 			ClashAPI: &ClashAPIConfig{
 				ExternalController: fmt.Sprintf("127.0.0.1:%d", b.socksPort+2),
+				Secret:             localauth.ClashSecret(), // лот L4: API без секрета открыт любому приложению
 			},
 		},
 	}
@@ -1284,6 +1311,15 @@ func (b *Builder) baseConfig(entryTag string) *Config {
 			Listen:     "127.0.0.1",
 			ListenPort: b.socksPort + 1,
 		},
+	}
+	// Лот L4: в режиме VPN приложения пользователя идут через TUN, а локальные socks/http нужны
+	// только самому APF - защищаем их паролем сессии. В режимах "прокси" и "гибрид" вход остаётся
+	// открытым: к нему подключаются браузер и приложения (системный прокси, ручная настройка).
+	if b.LocalAuthEnabled() {
+		u, p := localauth.Credentials()
+		for i := range cfg.Inbounds {
+			cfg.Inbounds[i].Users = []InboundUser{{Username: u, Password: p}}
+		}
 	}
 
 	// TUN режим (перехват всего трафика ОС)

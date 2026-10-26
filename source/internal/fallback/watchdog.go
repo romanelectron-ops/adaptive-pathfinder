@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 )
 
 // WatchdogConfig — настройки watchdog
@@ -382,16 +384,9 @@ func doSOCKS5Connect(conn net.Conn, targetAddr string, timeout time.Duration) er
 	conn.SetDeadline(time.Now().Add(timeout))
 	defer conn.SetDeadline(time.Time{})
 
-	// Приветствие: ver=5, nmethods=1, method=0 (no auth)
-	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+	// Приветствие: предлагаем "без пароля" и "логин/пароль" (лот L4); выбирает сервер.
+	if err := localauth.Greet(conn); err != nil {
 		return fmt.Errorf("socks5 hello: %w", err)
-	}
-	resp := make([]byte, 2)
-	if _, err := readFullConn(conn, resp); err != nil {
-		return fmt.Errorf("socks5 hello resp: %w", err)
-	}
-	if resp[0] != 0x05 || resp[1] != 0x00 {
-		return fmt.Errorf("socks5: auth required or unsupported")
 	}
 
 	// CONNECT запрос

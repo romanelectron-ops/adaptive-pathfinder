@@ -131,6 +131,10 @@ type Node struct {
 
 	TLS       *TLSConfig       `json:"tls,omitempty"`
 	Transport *TransportConfig `json:"transport,omitempty"`
+	// FPCandidates — все uTLS-отпечатки, под которыми источники раздавали ЭТОТ сервер (лот L2):
+	// основной (тот, что уходит ядру, TLS.Fingerprint) и запасные. В ID узла отпечаток НЕ входит,
+	// поэтому варианты одной и той же ссылки схлопываются в один узел, а не раздувают пул.
+	FPCandidates []string `json:"fp_candidates,omitempty"`
 
 	// Метрики (заполняются Checker-ом)
 	Latency int64   `json:"latency_ms"`
@@ -230,6 +234,21 @@ func (n *Node) CatalogCountry() string {
 		return ""
 	}
 	r := []rune(n.Name)
+	// Лот U-07: флаг-эмодзи — это пара региональных индикаторов U+1F1E6..U+1F1FF («🇪🇬» = E+G).
+	// Это самый надёжный признак страны в именах igareck («🇪🇬 Egypt | [*CIDR]»): само слово
+	// «Egypt» кодом страны не является и раньше давало пустой ответ. Флаг в начале имени
+	// приоритетнее любых латинских букв в имени. Берётся ПЕРВЫЙ флаг в имени, и только если это код
+	// страны ISO 3166-1: «🇪🇺» и «🇺🇳» - не страны выхода, ложное «⚠ не совпадает» от них не нужно.
+	for k := 0; k+1 < len(r); k++ {
+		a, b := r[k], r[k+1]
+		if a >= 0x1F1E6 && a <= 0x1F1FF && b >= 0x1F1E6 && b <= 0x1F1FF {
+			code := string([]rune{'A' + (a - 0x1F1E6), 'A' + (b - 0x1F1E6)})
+			if isoCountryCodes[code] {
+				return code
+			}
+			return ""
+		}
+	}
 	i := 0
 	for i < len(r) && !(r[i] >= 'A' && r[i] <= 'Z') { // пропускаем флаг-эмодзи и пробелы
 		i++
@@ -245,6 +264,28 @@ func (n *Node) CatalogCountry() string {
 	}
 	return string(r[i : i+2])
 }
+
+// isoCountryCodes - двухбуквенные коды стран ISO 3166-1 alpha-2 (плюс XK - Косово, его кодом
+// пользуются все базы GeoIP). Нужен, чтобы флаг вне списка стран (ЕС, ООН) не стал «страной».
+var isoCountryCodes = func() map[string]bool {
+	const list = "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ " +
+		"BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ " +
+		"CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ " +
+		"DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR " +
+		"GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY " +
+		"HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP " +
+		"KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY " +
+		"MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ " +
+		"NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA " +
+		"RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ " +
+		"TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ " +
+		"VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW"
+	m := make(map[string]bool, 260)
+	for _, c := range strings.Fields(list) {
+		m[c] = true
+	}
+	return m
+}()
 
 // ExitCountry — ФАКТИЧЕСКАЯ страна выхода, подтверждённая проверкой ("" — неизвестна).
 func (n *Node) ExitCountry() string {
@@ -463,9 +504,12 @@ type AppConfig struct {
 	// Только Android. На Windows аналога нет (см. комментарий в APFVpnService.kt).
 	DisallowedApps []string       `json:"disallowed_apps,omitempty"`
 	Sources        []SourceConfig `json:"sources"`
-	SingBoxPath    string         `json:"singbox_path"`
-	ListenPort     int            `json:"listen_port"`
-	WebUIPort      int            `json:"webui_port"`
+	// CatalogProviderStates - выбор "включён/выключен" для провайдеров каталога, у которых нет записи в
+	// Sources (awesome-vpn, платные): раньше их переключатель не переживал перезапуск.
+	CatalogProviderStates map[string]bool `json:"catalog_provider_states,omitempty"`
+	SingBoxPath           string          `json:"singbox_path"`
+	ListenPort            int             `json:"listen_port"`
+	WebUIPort             int             `json:"webui_port"`
 
 	// Wizard настройки
 	SetupDone    bool   `json:"setup_done"`
@@ -784,6 +828,18 @@ type SourceConfig struct {
 	// скан — интервал UpdateIntervalHours никогда не соблюдался, все подписки перекачивались
 	// перед каждым подключением (ND-3: секунды-минуты ожидания до первой проверки узла).
 	LastUpdatedAt int64 `json:"last_updated_at,omitempty"`
+	// Отметки содержимого (лот L5, internal/contentage): отпечаток набора узлов последней
+	// загрузки и моменты «впервые увидели» / «в последний раз заметили перемену». Нужны, чтобы
+	// возраст содержимого переживал перезапуск, а замороженный источник не выглядел свежим
+	// только потому, что отвечает кодом 200. Пишет только движок; руками править не нужно.
+	ContentHash        string `json:"content_hash,omitempty"`
+	ContentFirstSeenAt int64  `json:"content_first_seen_at,omitempty"`
+	ContentChangedAt   int64  `json:"content_changed_at,omitempty"`
+	// ContentSeenAt — последняя непустая загрузка, которую видел учёт содержимого (любым из двух
+	// путей: фоновое обновление пула и ручное «Обновить каталог»). LastUpdatedAt для этого не
+	// годится: его пишет только фоновый менеджер, и после ручного обновления он оставался бы
+	// старым — карточка источника уверяла бы, что тот «давно не загружался».
+	ContentSeenAt int64 `json:"content_seen_at,omitempty"`
 }
 
 // Состояния проверки канала для UI (общий контракт, 2026-09-06). Смысл разделения: туннель
@@ -893,6 +949,15 @@ type CheckResult struct {
 
 // DefaultConfig — конфигурация по умолчанию
 func DefaultConfig() *AppConfig {
+	c := defaultConfigBase()
+	// Лот L5: встроенные необязательные источники (igareck) лежат в списке ВЫКЛЮЧЕННЫМИ —
+	// пользователь включает их в «Каталоге серверов». См. optional_sources.go.
+	c.ensureOptionalSources()
+	return c
+}
+
+// defaultConfigBase — дефолты без необязательных источников; обёрнута DefaultConfig.
+func defaultConfigBase() *AppConfig {
 	return &AppConfig{
 		AutoConnect:      true,
 		CheckInterval:    30,
@@ -1009,5 +1074,16 @@ func DefaultConfig() *AppConfig {
 		ConnectionMode:           ModeProxy,
 		SetSystemProxy:           false,
 		SelectionMode:            "auto",
+	}
+}
+
+// PrepareForJSON вызывается перед разбором config.json поверх DefaultConfig (config.LoadIntoFrom).
+// json.Unmarshal раскладывает массив поэлементно ПОВЕРХ уже заполненных дефолтных слотов, и запись,
+// написанная руками без части полей, унаследовала бы значения дефолтного слота (например,
+// auto_update=true у igareck). Если sources есть в файле, дефолтный срез сбрасывается: источники
+// берутся только из файла, а недостающие встроенные дописывает Normalize.
+func (c *AppConfig) PrepareForJSON(present map[string]bool) {
+	if c != nil && present["sources"] {
+		c.Sources = nil
 	}
 }

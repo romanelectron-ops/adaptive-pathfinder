@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 	"github.com/apf/adaptive-pathfinder/internal/netguard"
 )
 
@@ -543,6 +544,7 @@ var switchOutboundFn = func(controllerAddr, selectorTag, targetTag string, timeo
 		return fmt.Errorf("switchOutbound: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", localauth.BearerHeader()) // лот L4: секрет Clash API
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"context"
 	"net"
 	"time"
+
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 )
 
 // dialSOCKS5 — простой SOCKS5 dialer для DNS leak тестирования через туннель.
@@ -16,23 +18,19 @@ func dialSOCKS5(ctx context.Context, socksAddr, targetAddr string) (net.Conn, er
 		return nil, err
 	}
 
-	// SOCKS5 handshake
-	// 1. Приветствие: версия=5, методов=1, метод=0 (no auth)
-	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		conn.Close()
-		return nil, err
+	// SOCKS5 handshake: предлагаем "без пароля" и "логин/пароль", выбирает сервер (лот L4). Greet читает
+	// из соединения дважды (метод, затем ответ на пароль) и сам срок не ставит - ставим его здесь:
+	// ближайший из срока контекста и 5 секунд.
+	deadline := time.Now().Add(5 * time.Second)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
 	}
-
-	// 2. Ответ сервера: версия=5, метод=0
-	resp := make([]byte, 2)
-	if _, err := readFull(conn, resp); err != nil {
+	_ = conn.SetDeadline(deadline)
+	if err := localauth.Greet(conn); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, &net.OpError{Op: "socks5", Err: err}
 	}
-	if resp[0] != 0x05 || resp[1] != 0x00 {
-		conn.Close()
-		return nil, &net.OpError{Op: "socks5", Err: net.UnknownNetworkError("auth required")}
-	}
+	_ = conn.SetDeadline(time.Time{}) // дальше срок задаёт вызывающий (dns.go)
 
 	// 3. Запрос: версия=5, команда=1(CONNECT), rsv=0, тип=3(DOMAINNAME)
 	host, port, err := parseAddr(targetAddr)

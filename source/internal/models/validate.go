@@ -100,7 +100,12 @@ func ValidateNode(n *Node) error {
 		case "tcp", "ws", "grpc", "http", "":
 			// ok
 		default:
-			errs = append(errs, fmt.Sprintf("unknown transport type %q", n.Transport.Type))
+			if label := UnsupportedTransport(n); label != "" {
+				// Лот L1: транспорт известен, но ядра для него в этой сборке нет — говорим это прямо.
+				errs = append(errs, fmt.Sprintf("transport %s (%q) is not supported by this build", label, n.Transport.Type))
+			} else {
+				errs = append(errs, fmt.Sprintf("unknown transport type %q", n.Transport.Type))
+			}
 		}
 		if (n.Transport.Type == "ws" || n.Transport.Type == "http") && n.Transport.Path != "" &&
 			!strings.HasPrefix(n.Transport.Path, "/") {

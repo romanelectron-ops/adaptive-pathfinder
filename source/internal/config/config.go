@@ -296,6 +296,17 @@ func LoadIntoFrom(path string, dst interface{}) (found bool, err error) {
 	// принесли с другой машины) не роняет загрузку: оно становится пустым, исходный шифртекст
 	// сохраняется, а состояние «секреты недоступны» видно через config.SecretsState().
 	data = unprotectConfigSecrets(data)
+	// Поля-срезы со значениями по умолчанию не должны наследоваться поэлементно (см. AppConfig.PrepareForJSON).
+	if p, ok := dst.(interface{ PrepareForJSON(map[string]bool) }); ok {
+		var keys map[string]json.RawMessage
+		if json.Unmarshal(data, &keys) == nil {
+			present := make(map[string]bool, len(keys))
+			for k := range keys {
+				present[k] = true
+			}
+			p.PrepareForJSON(present)
+		}
+	}
 	if err := json.Unmarshal(data, dst); err != nil {
 		return false, err
 	}
