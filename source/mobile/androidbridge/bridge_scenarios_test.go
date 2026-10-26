@@ -9,6 +9,7 @@ import (
 
 	"github.com/apf/adaptive-pathfinder/internal/config"
 	"github.com/apf/adaptive-pathfinder/internal/engine"
+	"github.com/apf/adaptive-pathfinder/internal/testenv"
 )
 
 // Этот файл дополняет bridge_test.go/tun_test.go/server_role_test.go сценариями для
@@ -46,62 +47,22 @@ func snapshotAndRestoreDataFile(t *testing.T, filename string) {
 	})
 }
 
-// ─── Последняя линия защиты файлов реальной машины (K2-A, 2026-09-07) ────────────────────
+// ─── Изоляция каталога данных на весь пакет ──────────────────────────────────────────────
 //
-// ИЗМЕРЕНО, а не предположено: до этой правки `go test ./mobile/androidbridge/... -race`
-// оставлял в РЕАЛЬНОМ %APPDATA%\APF\nodes_cache.json тестовый узел «TestSS»
-// (192.168.1.1:8388) — файл менялся при каждом прогоне, хотя семь тестов уже защищены
-// snapshotAndRestoreDataFile выше. Проверка: md5 файла до и после прогона различались, а
-// diff показывал ровно обновившиеся added_at/last_failed_at тестового узла. Значит запись
-// происходит ПОЗЖЕ, чем t.Cleanup конкретного теста: движки, созданные тестами, не
-// останавливаются, и их фоновые сохранения приземляются уже после восстановления снимка.
-//
-// Поэтому снимок делается ещё и на весь пакет: что бы ни писали пережившие тест горутины,
-// после m.Run() файлы возвращаются в исходное состояние.
-//
-// Чего эта защита НЕ даёт: запись, которая случится в промежутке между restore() и
-// os.Exit, всё равно останется — гарантия здесь вероятностная, а не абсолютная. Настоящее
-// решение — не создавать движки, чей фон продолжает жить после теста, но это правка самих
-// тестов/движка, и она за периметром лота K2-A.
+// Раньше здесь стояла «последняя линия защиты»: снимок config.json/nodes_cache.json/
+// nodes_tombstones.json настоящего профиля до прогона и запись их обратно после. Она была
+// вероятностной (фоновые сохранения переживших тест движков могли приземлиться после
+// восстановления) и сама переписывала файлы владельца при КАЖДОМ прогоне (совпадающими байтами,
+// но с новым временем изменения), а на время прогона файлы профиля подменялись тестами. Теперь
+// каталог данных уводится во временный (APPDATA/HOME/USERPROFILE) так же, как в internal/engine,
+// internal/web и internal/config: тесты вообще не видят профиль пользователя. Снимки в
+// отдельных тестах (snapshotAndRestoreDataFile) остаются, но работают уже во временном каталоге.
 func TestMain(m *testing.M) {
-	restore := snapshotDataFilesForPackage(
-		"config.json",
-		"nodes_cache.json",
-		"nodes_tombstones.json",
-	)
+	tmp, cleanup := testenv.MustIsolate("apf-androidbridge-data-")
+	testenv.CheckRedirected(config.DataDir(), tmp)
 	code := m.Run()
-	restore()
+	cleanup()
 	os.Exit(code)
-}
-
-// snapshotDataFilesForPackage — тот же приём, что snapshotAndRestoreDataFile, но без
-// *testing.T: TestMain выполняется вне теста, и t.Cleanup там недоступен.
-func snapshotDataFilesForPackage(names ...string) func() {
-	type snapshot struct {
-		path    string
-		data    []byte
-		existed bool
-	}
-	snaps := make([]snapshot, 0, len(names))
-	for _, name := range names {
-		path := filepath.Join(config.DataDir(), name)
-		data, err := os.ReadFile(path)
-		snaps = append(snaps, snapshot{path: path, data: data, existed: err == nil})
-	}
-	return func() {
-		for _, s := range snaps {
-			if !s.existed {
-				// Файла не было до прогона — значит его создали тесты, и оставлять его
-				// на машине владельца нельзя.
-				os.Remove(s.path)
-				continue
-			}
-			if err := os.WriteFile(s.path, s.data, 0o644); err != nil {
-				os.Stderr.WriteString(
-					"androidbridge: не удалось восстановить " + s.path + ": " + err.Error() + "\n")
-			}
-		}
-	}
 }
 
 // newBareTestEngine — общий приём этого пакета (engine.New без .Start()): движок готов

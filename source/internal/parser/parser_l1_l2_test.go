@@ -183,3 +183,31 @@ func TestU07_CountryFromFlagEmoji(t *testing.T) {
 		t.Errorf("слово RELAY принято за страну: %q", got)
 	}
 }
+
+// L1: Clash-узел с транспортом h2 (после нормализации - http) берёт путь из вложенного h2-opts, а не
+// принимается без пути.
+func TestL1_ClashH2TakesNestedPath(t *testing.T) {
+	yaml := "proxies:\n" +
+		"  - name: h2node\n" +
+		"    type: vmess\n" +
+		"    server: 192.0.2.60\n" +
+		"    port: 443\n" +
+		"    uuid: 00000000-0000-4000-8000-0000000000aa\n" +
+		"    alterId: 0\n" +
+		"    tls: true\n" +
+		"    servername: example.org\n" +
+		"    network: h2\n" +
+		"    h2-opts:\n" +
+		"      path: /h2path\n"
+	nodes, err := ParseClashYAML([]byte(yaml))
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("разобрано %d узлов, err=%v", len(nodes), err)
+	}
+	tr := nodes[0].Transport
+	if tr == nil || tr.Type != "http" || tr.Path != "/h2path" {
+		t.Fatalf("транспорт h2: %+v, ожидался http с путём /h2path", tr)
+	}
+	if models.UnsupportedTransport(nodes[0]) != "" {
+		t.Error("http - поддерживаемый транспорт")
+	}
+}

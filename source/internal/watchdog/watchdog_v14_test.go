@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,9 +77,21 @@ func realExitError(t *testing.T, code int) error {
 
 // notFoundError — реальная ошибка exec.LookPath на несуществующий исполняемый файл, оборачивает
 // exec.ErrNotFound (проверяется отдельно, чтобы тест не зависел молча от факта обёртки).
+//
+// Ошибка строится ОДИН раз на весь тестовый бинарник: каждый запуск несуществующего файла заново
+// обходит весь PATH, а на Windows с длинным PATH под нагрузкой это занимало секунды на вызов - тесты
+// с пределом 5 с падали по времени, хотя код не менялся.
+var (
+	notFoundOnce sync.Once
+	notFoundErr  error
+)
+
 func notFoundError(t *testing.T) error {
 	t.Helper()
-	err := exec.Command("apf-s10-does-not-exist-anywhere-3f9c").Run()
+	notFoundOnce.Do(func() {
+		notFoundErr = exec.Command("apf-s10-does-not-exist-anywhere-3f9c").Run()
+	})
+	err := notFoundErr
 	if err == nil {
 		t.Fatal("ожидалась ошибка запуска несуществующего исполняемого файла")
 	}

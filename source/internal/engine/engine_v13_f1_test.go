@@ -179,13 +179,15 @@ func TestSaveNodesDebounced_FlushesDirtyByTimer(t *testing.T) {
 	if saved := readNodesCache(t, dir)["n1"]; saved == nil || saved.FailStreak != 1 {
 		t.Fatalf("сразу после второго события на диске должен быть streak=1 (debounce), got %+v", saved)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// Таймер - 80 мс; срок в 20 с нужен только как предел ожидания: при полном прогоне пакетов
+	// параллельно процесс теста может простаивать секундами (антивирус, соседние тесты).
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		if saved := readNodesCache(t, dir)["n1"]; saved != nil && saved.FailStreak == 2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("отложенный сброс по таймеру не записал streak=2 за 2 с")
+			t.Fatal("отложенный сброс по таймеру не записал streak=2 за 20 с")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

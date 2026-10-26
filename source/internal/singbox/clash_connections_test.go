@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 )
 
 func TestQueryConnectionsCount_ParsesRealResponse(t *testing.T) {
@@ -96,5 +98,37 @@ func TestQueryConnectionsCount_MalformedJSON_ReturnsError(t *testing.T) {
 	_, err := QueryConnectionsCount(port)
 	if err == nil {
 		t.Fatal("ожидалась ошибка при неразбираемом JSON")
+	}
+}
+
+// Лот L4: Clash API роли «Выход» защищён секретом; опрос шлёт его в Authorization, без него сервер
+// отвечает 401 и счётчик остаётся «неизвестно» (а не «0 подключений»).
+func TestQueryConnectionsCount_SendsClashSecret(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if gotAuth != localauth.BearerHeader() {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Write([]byte(`{"connections":[{"id":"a","metadata":{"sourceIP":"192.0.2.9"}}]}`))
+	}))
+	defer srv.Close()
+
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	snap, err := QueryConnectionsCount(port)
+	if err != nil || snap.Count != 1 {
+		t.Fatalf("snap=%+v err=%v (заголовок Authorization: %q)", snap, err, gotAuth)
+	}
+}
+
+// Серверный конфиг роли «Выход» несёт тот же секрет, что и опрос.
+func TestBuildServerConfig_ClashAPIHasSessionSecret(t *testing.T) {
+	doc := BuildServerConfig(testIdentity(t), 8443, "example.org:443")
+	if doc.Experimental == nil || doc.Experimental.ClashAPI == nil {
+		t.Fatal("clash_api не объявлен")
+	}
+	if got := doc.Experimental.ClashAPI.Secret; got == "" || got != localauth.ClashSecret() {
+		t.Errorf("secret = %q, ожидался секрет сессии", got)
 	}
 }

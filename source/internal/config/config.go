@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Injection vars for testing OS-specific branches.
@@ -256,11 +257,17 @@ func SaveConfigTo(path string, cfg interface{}) error {
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
+	// На Windows rename поверх файла, который в этот момент читает антивирус/резервное копирование,
+	// отказывает мимолётно (Go открывает файлы без FILE_SHARE_DELETE): повторяем несколько раз,
+	// иначе настройка пользователя не сохранилась бы без единого признака в интерфейсе.
+	for attempt := 0; attempt < 6; attempt++ {
+		if err = os.Rename(tmp, path); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
 	}
-	return nil
+	os.Remove(tmp)
+	return err
 }
 
 // LoadRaw загружает конфиг как сырые байты

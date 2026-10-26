@@ -7676,16 +7676,27 @@ func (e *Engine) saveNodesToDisk() error {
 //
 // Rename в пределах одного каталога атомарен и на POSIX, и на Windows (MoveFileEx с
 // заменой) — читатель видит либо старый файл целиком, либо новый целиком.
+//
+// Rename поверх файла, который в этот момент кто-то читает (антивирус, резервное копирование,
+// проводник), на Windows отказывает («Access is denied» / нарушение общего доступа): Go открывает
+// файлы для чтения без FILE_SHARE_DELETE. Отказ почти всегда мимолётный, поэтому переименование
+// повторяется несколько раз с короткой паузой; иначе отложенный сброс (saveNodesDebounced) терял
+// запись насовсем: таймер уже сработал, а следующего события, которое записало бы пул, может
+// не быть долго.
 func writeFileAtomic(path string, data []byte) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp) // не оставляем мусор, если переименование не удалось
-		return err
+	var err error
+	for attempt := 0; attempt < 6; attempt++ {
+		if err = os.Rename(tmp, path); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
 	}
-	return nil
+	os.Remove(tmp) // не оставляем мусор, если переименование не удалось
+	return err
 }
 
 func (e *Engine) loadNodes() error {

@@ -155,6 +155,9 @@ func TestEnsureListenPortFree_ReclaimsSelfHeldPortAfterStop(t *testing.T) {
 // Порт освобождается асинхронно (не на Stop, а спустя пару поллингов) — поллинг обязан дождаться.
 func TestEnsureListenPortFree_WaitsForAsyncRelease(t *testing.T) {
 	withShortPortRelease(t)
+	// Порт освобождается через 10 мс; предел ожидания нужен лишь как страховка. 200 мс из
+	// withShortPortRelease под нагрузкой (-race, параллельные пакеты) мимолётно не хватало.
+	portReleaseTimeout = 10 * time.Second
 	e := newTestEngine()
 	e.cfg.ListenPort = 10808
 

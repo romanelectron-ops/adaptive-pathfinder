@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 )
 
 // clashConnectionsQueryTimeout — короткий таймаут: это опрос ЛОКАЛЬНОГО (127.0.0.1) API,
@@ -41,7 +43,12 @@ type clashConnectionsFullResp struct {
 //	не как «0 подключений» (см. её комментарий).
 func QueryConnectionsCount(port int) (ConnectionsSnapshot, error) {
 	client := &http.Client{Timeout: clashConnectionsQueryTimeout}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/connections", port))
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/connections", port), nil)
+	if err != nil {
+		return ConnectionsSnapshot{}, fmt.Errorf("clash-api /connections: %w", err)
+	}
+	req.Header.Set("Authorization", localauth.BearerHeader()) // лот L4: секрет Clash API роли «Выход»
+	resp, err := client.Do(req)
 	if err != nil {
 		return ConnectionsSnapshot{}, fmt.Errorf("clash-api /connections: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/apf/adaptive-pathfinder/internal/config"
+	"github.com/apf/adaptive-pathfinder/internal/localauth"
 )
 
 // ─── Серверный (роль «Выход»/«Транзит») JSON-документ ────────────────────────────
@@ -173,6 +174,11 @@ func BuildServerConfig(identity ServerIdentity, listenPort int, realityDest stri
 			},
 			ClashAPI: &ClashAPIConfig{
 				ExternalController: fmt.Sprintf("127.0.0.1:%d", ServerClashAPIPort(listenPort)),
+				// Лот L4: без секрета любое приложение устройства (и страница браузера: CORS у
+				// sing-box по умолчанию "*") читало бы /connections - адреса подключённых
+				// устройств «Входов». QueryConnectionsCount шлёт тот же секрет; sing-box роли
+				// запускается тем же процессом, что и опрашивает, так что секрет сессии общий.
+				Secret: localauth.ClashSecret(),
 			},
 		},
 		Route: RouteConfig{

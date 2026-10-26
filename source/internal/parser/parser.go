@@ -632,12 +632,8 @@ func clashBuildNode(f map[string]string) *models.Node {
 			}
 			node.TLS = &models.TLSConfig{Enabled: true, ServerName: sni}
 		}
-		if net := canonicalTransportType(f["network"]); net != "" && net != "tcp" {
-			node.Transport = &models.TransportConfig{
-				Type: net,
-				Path: f["ws-path"],
-				Host: f["ws-headers-Host"],
-			}
+		if tr := clashTransport(f, f["ws-headers-Host"]); tr != nil {
+			node.Transport = tr
 		}
 
 	case "trojan":
@@ -648,11 +644,8 @@ func clashBuildNode(f map[string]string) *models.Node {
 			sni = server
 		}
 		node.TLS = &models.TLSConfig{Enabled: true, ServerName: sni}
-		if net := canonicalTransportType(f["network"]); net != "" && net != "tcp" {
-			node.Transport = &models.TransportConfig{
-				Type: net,
-				Path: f["ws-path"],
-			}
+		if tr := clashTransport(f, ""); tr != nil {
+			node.Transport = tr
 		}
 
 	case "vless":
@@ -670,11 +663,8 @@ func clashBuildNode(f map[string]string) *models.Node {
 			}
 			node.TLS = &models.TLSConfig{Enabled: true, ServerName: sni}
 		}
-		if net := canonicalTransportType(f["network"]); net != "" && net != "tcp" {
-			node.Transport = &models.TransportConfig{
-				Type: net,
-				Path: f["ws-path"],
-			}
+		if tr := clashTransport(f, ""); tr != nil {
+			node.Transport = tr
 		}
 
 	default:
@@ -684,6 +674,31 @@ func clashBuildNode(f map[string]string) *models.Node {
 	node.ID = generateID(node)
 	node.NormalizeFingerprints() // лот L2: собственный отпечаток — первый в списке запасных
 	return node
+}
+
+// clashTransport собирает транспорт узла Clash. Разбор YAML здесь построчный и «сплющивает»
+// вложенные блоки: для ws путь лежит в ws-path, а для h2 (после нормализации - http) блок h2-opts
+// даёт голые path и host (host - список вида [a.example.org]). Раньше h2 читал только ws-path и
+// принимался без пути, то есть узел мог не подключиться. defaultHost - уже найденный Host (ws).
+func clashTransport(f map[string]string, defaultHost string) *models.TransportConfig {
+	net := canonicalTransportType(f["network"])
+	if net == "" || net == "tcp" {
+		return nil
+	}
+	tr := &models.TransportConfig{Type: net, Path: f["ws-path"], Host: defaultHost}
+	if net == "http" {
+		if tr.Path == "" {
+			tr.Path = f["path"]
+		}
+		if tr.Host == "" {
+			h := strings.Trim(f["host"], "[] ")
+			if i := strings.IndexAny(h, ", "); i >= 0 {
+				h = h[:i]
+			}
+			tr.Host = strings.Trim(h, `"'`)
+		}
+	}
+	return tr
 }
 
 // --- Вспомогательные функции ---
