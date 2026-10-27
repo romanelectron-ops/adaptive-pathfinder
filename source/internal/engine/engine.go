@@ -3343,6 +3343,24 @@ func (e *Engine) routeKillSwitchEnable(node *models.Node) error {
 // подобные в internal/config) — иначе проверка реального таймаута ждала бы настоящие 8с.
 var ksCallTimeout = 8 * time.Second
 
+// ksResetTimeoutFactor — во сколько раз дольше ждём Reset/QuickReset/ResetAll. В отличие от
+// Enable/Disable (один вызов WFP), это ДВЕНАДЦАТЬ последовательных `netsh ... delete rule` плюс
+// смена политики и flushdns (killswitch.QuickReset/deleteAllAPFRules): с сотнями правил
+// брандмауэра каждый процесс netsh занимает до секунды, и честная очистка укладывается в 8–12 с.
+// Живой ПК 2026-10-27: на КАЖДОМ «Отключить» (12:14 и 12:48) ловился таймаут 8 с, лог объявлял
+// «зависла служба фильтрации (BFE)», а бэкенд заменялся на локальный — хотя очистка просто шла.
+// Настоящий зависший BFE по-прежнему ловится, только через ksCallTimeout*factor.
+const ksResetTimeoutFactor = 3
+
+// ksOpTimeout — сколько ждать конкретную операцию KS-бэкенда.
+func ksOpTimeout(op string) time.Duration {
+	switch op {
+	case "Reset", "QuickReset", "ResetAll":
+		return ksCallTimeout * ksResetTimeoutFactor
+	}
+	return ksCallTimeout
+}
+
 // wgWaitTimeout — сколько максимум Stop()/Restart() ждут e.wg.Wait() (все goTracked-горутины:
 // emergencySwitch, enableKillSwitchWithUAC и т.п.), прежде чем сдаться и продолжить закрытие
 // движка без них.
@@ -3389,21 +3407,22 @@ func waitGroupWithTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 func (e *Engine) ksCall(op string, ks killswitch.KillSwitch, fn func() error) error {
 	done := make(chan error, 1)
 	go func() { done <- fn() }()
+	timeout := ksOpTimeout(op)
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(ksCallTimeout):
+	case <-time.After(timeout):
 		e.ksMu.Lock()
 		if e.ks == ks {
 			e.log(fmt.Sprintf("KillSwitch: %s не завершился за %s — похоже, зависла системная "+
 				"служба фильтрации (BFE); пересоздаю бэкенд, не дожидаясь зависшей попытки",
-				op, ksCallTimeout))
+				op, timeout))
 			e.ks, e.ksIsService = killswitch.NewLocalBackend(e.ksNeedsTunMode()), false
 			e.ksProbedAt = time.Now()
 		}
 		e.ksMu.Unlock()
 		return fmt.Errorf("killswitch: %s не завершился за %s — бэкенд пересоздан, "+
-			"повторите попытку", op, ksCallTimeout)
+			"повторите попытку", op, timeout)
 	}
 }
 
@@ -5734,19 +5753,28 @@ func (e *Engine) getRescanBatch(limit int) []*models.Node {
 func (e *Engine) checkNodeSerialized(ctx context.Context, node *models.Node) *models.CheckResult {
 	e.nodeCheckMu.Lock()
 	defer e.nodeCheckMu.Unlock()
-	return e.checker.CheckOne(ctx, node)
+	var res *models.CheckResult
+	e.guardInconclusiveChecks([]*models.Node{node}, func() []*models.CheckResult {
+		res = e.checker.CheckOne(ctx, node)
+		return []*models.CheckResult{res}
+	})
+	return res
 }
 
 func (e *Engine) checkNodesSerialized(ctx context.Context, nodes []*models.Node) []*models.CheckResult {
 	e.nodeCheckMu.Lock()
 	defer e.nodeCheckMu.Unlock()
-	return e.checker.CheckAll(ctx, nodes)
+	return e.guardInconclusiveChecks(nodes, func() []*models.CheckResult {
+		return e.checker.CheckAll(ctx, nodes)
+	})
 }
 
 func (e *Engine) checkNodesWithSerialized(ctx context.Context, nodes []*models.Node, concurrency, pings int) []*models.CheckResult {
 	e.nodeCheckMu.Lock()
 	defer e.nodeCheckMu.Unlock()
-	return e.checker.CheckAllWith(ctx, nodes, concurrency, pings)
+	return e.guardInconclusiveChecks(nodes, func() []*models.CheckResult {
+		return e.checker.CheckAllWith(ctx, nodes, concurrency, pings)
+	})
 }
 
 // ─── Публичный API ────────────────────────────────────────────────────────────
@@ -7884,13 +7912,21 @@ func (e *Engine) openFileLog() {
 	if runtime.GOOS == "android" || e.fileSink != nil {
 		return
 	}
-	fs, err := logsink.NewFileSink(config.LogPath(), logsink.Options{})
+	// 4 МБ на файл (было 2): при проверке пула sing-box писал по строке на каждое соединение, и
+	// 5×2 МБ перезаписывались за 1–2 минуты. Рутинные строки отфильтрованы ниже; окно лога в
+	// памяти и разбор маршрутов в Web UI получают их как раньше (фильтр только у файла).
+	fs, err := logsink.NewFileSink(config.LogPath(), logsink.Options{MaxSize: 4 * 1024 * 1024})
 	if err != nil {
 		e.log(fmt.Sprintf("Лог-файл не открыт (%v) — лог только в памяти", err))
 		return
 	}
 	e.fileSink = fs
-	e.AddLogSink(fs.Write)
+	e.AddLogSink(func(msg string) {
+		if routineSingBoxLine(msg) {
+			return
+		}
+		fs.Write(msg)
+	})
 	e.log("Лог-файл: " + fs.Path())
 }
 
