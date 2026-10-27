@@ -107,6 +107,21 @@ func (g *IPv6Guard) IsEnabled() bool {
 	return g.enabled.Load()
 }
 
+// isLeakableIPv6 — может ли этот адрес быть путём наружу в обход туннеля. Link-local и
+// loopback наружу не маршрутизируются; уникальные локальные адреса (fc00::/7, ULA) — тоже: их
+// не отдаёт ни один провайдер. Именно такой адрес (fdfe:dcba:9876::1) APF сам вешает на свой
+// TUN-адаптер apf0, и проверка принимала его за утечку при каждом подключении в режиме VPN
+// (живой лог ПК 2026-10-27: «IPv6 Leak detected: fdfe:dcba:9876::1» + ложная тревога в окне).
+func isLeakableIPv6(ip net.IP) bool {
+	if ip.To16() == nil || ip.To4() != nil {
+		return false
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() {
+		return false
+	}
+	return true
+}
+
 // TestIPv6Leak проверяет наличие глобального IPv6 адреса.
 func TestIPv6Leak() (bool, string) {
 	ifaces, err := interfacesFn()
@@ -120,14 +135,10 @@ func TestIPv6Leak() (bool, string) {
 			if !ok || ipNet.IP == nil {
 				continue
 			}
-			ip := ipNet.IP
-			if ip.To16() == nil || ip.To4() != nil {
+			if !isLeakableIPv6(ipNet.IP) {
 				continue
 			}
-			if ip.IsLinkLocalUnicast() || ip.IsLoopback() {
-				continue
-			}
-			return true, ip.String()
+			return true, ipNet.IP.String()
 		}
 	}
 	return false, ""

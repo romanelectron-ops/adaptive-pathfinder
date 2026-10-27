@@ -569,7 +569,7 @@
           <div class="metric">
             <div class="metric-lbl">Задержка</div>
             <div class="metric-val" id="m-lat">—</div>
-            <div class="metric-sub">миллисекунд</div>
+            <div class="metric-sub" id="m-lat-sub">миллисекунд</div>
           </div>
           <div class="metric">
             <div class="metric-lbl">Протокол</div>
@@ -1688,6 +1688,18 @@ function resolveVerifyState(s) {
   return VERIFY_STATE_UI[s.verify_state] || VERIFY_STATE_UI.idle
 }
 
+// Живой ПК 2026-10-27: плитка показывала «33мс» (TCP-соединение с адресом узла), тогда как
+// настоящий HTTPS через туннель шёл 3–8 с, а проба трафика в журнале называла 3883 мс. Цифра
+// не врёт, но без подписи читается как скорость канала — поэтому подписываем, что это, и рядом
+// выводим задержку по реальному трафику, если узел им подтверждён.
+function latencySubText(node) {
+  if (!node) return 'миллисекунд'
+  if ((node.verified_count || 0) > 0 && node.last_verified_latency_ms > 0) {
+    return 'TCP до узла · по трафику ' + node.last_verified_latency_ms + ' мс'
+  }
+  return 'TCP до узла, мс'
+}
+
 function updateDashboard(s) {
   const orb = document.getElementById('orb')
   const lbl = document.getElementById('status-label')
@@ -1711,6 +1723,7 @@ function updateDashboard(s) {
   const node = s.active_node
   nd.textContent = node ? (node.name + ' · ' + node.address) : 'Нет активного узла'
   document.getElementById('m-lat').textContent = node ? node.latency_ms + 'мс' : '—'
+  document.getElementById('m-lat-sub').textContent = latencySubText(node)
   document.getElementById('m-proto').textContent = node ? node.protocol.toUpperCase() : '—'
   document.getElementById('m-mode').textContent = s.mode || '—'
 
@@ -1957,7 +1970,9 @@ function renderNodes() {
   nodes = nodes.sort(compareNodesVerifiedFirst)
 
   document.getElementById('nodes-count').textContent = nodes.length + ' узлов'
-  document.getElementById('nb-ok').textContent = state.nodes.filter(n => n.status === 'ok').length
+  // Живой ПК 2026-10-27: бейдж #nb-ok в боковой панели писался и ОТСЮДА (ok среди загруженных
+  // клиентом 200 строк), и из loadStats() (честный счёт бэкенда) — на экране он попеременно
+  // показывал «190» и «3050». Единственный владелец теперь loadStats(), как у #m-nodes ниже.
   // P1.1 (docs/TZ_WINDOWS_CONSILIUM_FINDINGS_v1.0.md): #m-nodes/#m-total раньше писались ОТСЮДА
   // (длина клиентского state.nodes — может быть обрезана observer-лимитом /api/nodes) И из
   // loadStats() (честный total с бэкенда, без обрезки) двумя независимыми таймерами — гонка

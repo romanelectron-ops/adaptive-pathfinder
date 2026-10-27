@@ -881,6 +881,23 @@ func (e *Engine) enableDeviceProtection() {
 	}
 }
 
+// rearmDeviceGuards — взводит IPv6- и WebRTC-защиту по КОНФИГУ при построении конфига
+// подключения. Stop() («Отключить») снимает обе, а enableDeviceProtection зовётся только из
+// Start(), поэтому первое же подключение после «Отключить» строило конфиг без глобального
+// ipv4_only-правила DNS (SetBlockIPv6 читает ipv6Guard): приложения получали AAAA и шли по IPv6
+// в TUN, у которого есть ULA-адрес, а у узла-выхода IPv6 нет — curl и подобные клиенты висели
+// 3–10 с (живой ПК 2026-10-27, SS-узел: `curl -4` — 0,4 с, без `-4` TLS не завершался). Раньше
+// дефект маскировала ложная «утечка IPv6» на адресе самого apf0, которая включала Guard задним
+// числом. Истина — конфиг (C-13): выключенное пользователем не включаем.
+func (e *Engine) rearmDeviceGuards() {
+	if e.cfg.BlockIPv6Leak && !e.ipv6Guard.IsEnabled() {
+		_ = e.ipv6Guard.Enable("apf0")
+	}
+	if e.cfg.BlockWebRTC && !e.webrtcGuard.IsEnabled() {
+		_ = e.webrtcGuard.Enable()
+	}
+}
+
 // currentCtx — гонка-безопасное чтение e.ctx (см. ctxMu у поля). Возвращает снимок на
 // момент вызова — тот же контракт, что был у прямого e.ctx: вызывающий код либо
 // использует его немедленно, либо порождает производный через context.With*, никогда не
@@ -1901,6 +1918,8 @@ func (e *Engine) buildNodeConfigWithSetup(node *models.Node) (*singbox.Config, e
 	}
 	// R-6.2: настройка защиты от IPv6-утечки могла измениться через PatchConfig после New().
 	e.builder.SetTunIPv6(e.cfg.BlockIPv6Leak)
+	// После «Отключить» Guard снят, а Start() больше не зовётся — взводим по конфигу ДО чтения.
+	e.rearmDeviceGuards()
 	// Задача #18: пользовательский тумблер "IPv6 Block" (EnableIPv6Block/ipv6Guard) — раньше
 	// на Android ничего не делал, теперь реально форсирует ipv4_only на DNS-уровне.
 	e.builder.SetBlockIPv6(e.ipv6Guard.IsEnabled())
@@ -2084,6 +2103,7 @@ func (e *Engine) buildChainConfigWithSetup(chain *models.Chain) (*singbox.Config
 	}
 	// R-6.2: то же и для цепочки — иначе v6 утекал бы мимо туннеля именно в multi-hop.
 	e.builder.SetTunIPv6(e.cfg.BlockIPv6Leak)
+	e.rearmDeviceGuards()
 	// Задача #18: то же самое для цепочки — см. комментарий в connectNode.
 	e.builder.SetBlockIPv6(e.ipv6Guard.IsEnabled())
 	// R-8: у цепочки закрепляется адрес ТОЧКИ ВХОДА — только к ней подключается хост.

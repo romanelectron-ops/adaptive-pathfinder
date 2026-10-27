@@ -3935,7 +3935,7 @@ async function refresh(){
     const n=st.active_node;
     document.getElementById('c-node').textContent=n?n.name:'—';
     document.getElementById('c-mode').textContent=n?('via '+n.protocol):'';
-    document.getElementById('c-lat').textContent=n&&n.latency_ms?n.latency_ms+'мс':'—';
+    document.getElementById('c-lat').textContent=n&&n.latency_ms?n.latency_ms+'мс (TCP)'+((n.verified_count>0&&n.last_verified_latency_ms>0)?' · '+n.last_verified_latency_ms+'мс по трафику':''):'—';
     document.getElementById('c-score').textContent=n&&n.score?'score '+n.score.toFixed(1):'';
     document.getElementById('c-pool').textContent=(stats.ok||0)+' ✓';
     document.getElementById('c-total').textContent='из '+(stats.total||0);
