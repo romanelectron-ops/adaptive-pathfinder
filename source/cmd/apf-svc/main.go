@@ -159,6 +159,11 @@ func (s *apfService) Execute(args []string, req <-chan svc.ChangeRequest, resp c
 			svcLog("Конфиг пользователя загружен (профиль SYSTEM не видит его напрямую): " + userPath)
 			resolvedConfigPath = userPath
 		}
+	} else if p, ok := config.FindInteractiveUserProfileConfigPath(); ok {
+		// Чистая установка: config.json у пользователя ещё нет — всё равно переезжаем в его
+		// профиль, иначе токен веб-API окажется в профиле SYSTEM и окно получит 401.
+		svcLog("Конфига пользователя ещё нет — каталог данных службы: " + filepath.Dir(p))
+		resolvedConfigPath = p
 	}
 	// ТЗ v1.3 F5.2: одна нормализация на всех точках входа — неверное значение = дефолт + WARN.
 	for _, w := range cfg.Normalize() {
@@ -534,6 +539,8 @@ func runDirect() {
 			log.Printf("Конфиг пользователя загружен: %s", userPath)
 			resolvedConfigPath = userPath
 		}
+	} else if p, ok := config.FindInteractiveUserProfileConfigPath(); ok {
+		resolvedConfigPath = p
 	}
 	for _, w := range cfg.Normalize() { // ТЗ v1.3 F5.2
 		log.Printf("Конфиг: %s", w)

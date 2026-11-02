@@ -266,13 +266,37 @@ func restrictTokenFileACL(path string) {
 		return
 	}
 	user := os.Getenv("USERNAME")
-	if user == "" {
-		return
-	}
-	if domain := os.Getenv("USERDOMAIN"); domain != "" {
+	if domain := os.Getenv("USERDOMAIN"); user != "" && domain != "" {
 		user = domain + "\\" + user
 	}
-	_ = exec.Command("icacls", path, "/inheritance:r", "/grant:r", user+":F").Run()
+	args := []string{path, "/inheritance:r", "/grant:r"}
+	if user != "" {
+		args = append(args, user+":F")
+	}
+	// Служба (SYSTEM) пишет файл в профиль ПОЛЬЗОВАТЕЛЯ: USERNAME там — «ИМЯ_ПК$», и без явной
+	// выдачи владельцу профиля окно не смогло бы прочитать токен (401 на чистой установке).
+	if owner := profileOwnerFromPath(path); owner != "" && !strings.EqualFold(owner, os.Getenv("USERNAME")) {
+		args = append(args, owner+":F")
+	}
+	if len(args) == 3 {
+		return
+	}
+	_ = exec.Command("icacls", args...).Run()
+}
+
+// profileOwnerFromPath — имя пользователя из пути вида C:\Users\<имя>\... ("" — не профиль).
+func profileOwnerFromPath(p string) string {
+	parts := strings.Split(filepath.ToSlash(p), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if strings.EqualFold(parts[i], "Users") && i > 0 {
+			switch strings.ToLower(parts[i+1]) {
+			case "public", "default", "all users":
+				return ""
+			}
+			return parts[i+1]
+		}
+	}
+	return ""
 }
 
 // portRange — сколько последовательных портов, начиная с настроенного, перебирает
